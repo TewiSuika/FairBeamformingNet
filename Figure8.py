@@ -3,13 +3,11 @@ import matplotlib.pyplot as plt
 import torch
 import os
 import torch.nn as nn
-from scipy.optimize import differential_evolution
-from pyswarm import pso
 from models.channel_data_generate import generate_sensing_channel,generate_communication_channel
-
+from algorithms.optimization import traditional_optimizer
 # ====================== System parameter configuration =======================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-user_angles = [-15, 15, 30, 45]
+user_angles = [-20, 10, 25, 60]
 target_angles = [-45]
 num_antennas = 16
 num_receiver_antennas = 16
@@ -23,11 +21,51 @@ CRLB_SCALE_FACTOR = 100
 
 
 # ====================== Model Loading Function ========================
+# class FairBeamformingNet(nn.Module):
+#     def __init__(self, input_size, hidden_size=512, num_users=4):
+#         super().__init__()
+#         self.num_users = num_users
+#
+#         self.shared_net = nn.Sequential(
+#             nn.Linear(input_size, hidden_size),
+#             nn.ReLU(),
+#             nn.Linear(hidden_size, hidden_size),
+#             nn.ReLU()
+#         )
+#
+#         self.user_branches = nn.ModuleList([
+#             nn.Sequential(
+#                 nn.Linear(hidden_size, hidden_size),
+#                 nn.ReLU(),
+#                 nn.Linear(hidden_size, num_antennas * 2)
+#             ) for _ in range(num_users)
+#         ])
+#
+#
+#         self.norm = nn.LayerNorm(num_antennas * 2)
+#
+#     def forward(self, Hc_real, Hc_imag, Hs_real, Hs_imag, rho):
+#
+#         Hc = torch.cat([Hc_real.flatten(1), Hc_imag.flatten(1)], dim=1)
+#         Hs = torch.cat([Hs_real.flatten(1), Hs_imag.flatten(1)], dim=1)
+#         x = torch.cat([Hc, Hs, rho.view(-1, 1)], dim=1)
+#
+#         x = self.shared_net(x)
+#         branch_outputs = [branch(x) for branch in self.user_branches]
+#         combined = torch.mean(torch.stack(branch_outputs), dim=0)
+#
+#         return self.norm(combined)
 class FairBeamformingNet(nn.Module):
-    def __init__(self, input_size, hidden_size=512, num_users=4):
+    def __init__(self, input_size, hidden_size=512, max_users=4, num_rf_chains=8):
         super().__init__()
-        self.num_users = num_users
+        self.max_users = max_users  # 最大用户数（动态用户数需≤此值）
+        self.num_rf_chains = num_rf_chains
+        self.num_antennas = 16  # 输出 32 = 16 * 2
 
+        # 检查RF链数是否足够支持最大用户数
+        assert max_users <= num_rf_chains, "max_users cannot exceed num_rf_chains"
+
+        # Shared network
         self.shared_net = nn.Sequential(
             nn.Linear(input_size, hidden_size),
             nn.ReLU(),
@@ -35,28 +73,60 @@ class FairBeamformingNet(nn.Module):
             nn.ReLU()
         )
 
-        self.user_branches = nn.ModuleList([
+        # Digital branches (每个用户输出2维复数)
+        self.digital_branches = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(hidden_size, hidden_size),
                 nn.ReLU(),
-                nn.Linear(hidden_size, num_antennas * 2)
-            ) for _ in range(num_users)
+                nn.Linear(hidden_size, 2)
+            ) for _ in range(max_users)  # 初始化最大可能的分支
         ])
 
+        # Analog beamformer (输出 num_rf_chains * num_antennas * 2)
+        self.analog_beamformer = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, num_rf_chains * num_antennas * 2)
+        )
 
         self.norm = nn.LayerNorm(num_antennas * 2)
 
-    def forward(self, Hc_real, Hc_imag, Hs_real, Hs_imag, rho):
+    def forward(self, Hc_real, Hc_imag, Hs_real, Hs_imag, rho, num_users=None):
+        """
+        Args:
+            num_users: 当前batch的动态用户数（需≤max_users）
+                      若为None，默认使用max_users
+        """
+        if num_users is None:
+            num_users = self.max_users
+        assert num_users <= self.max_users, f"num_users ({num_users}) > max_users ({self.max_users})"
 
+        # 输入处理
         Hc = torch.cat([Hc_real.flatten(1), Hc_imag.flatten(1)], dim=1)
         Hs = torch.cat([Hs_real.flatten(1), Hs_imag.flatten(1)], dim=1)
         x = torch.cat([Hc, Hs, rho.view(-1, 1)], dim=1)
-
         x = self.shared_net(x)
-        branch_outputs = [branch(x) for branch in self.user_branches]
-        combined = torch.mean(torch.stack(branch_outputs), dim=0)
 
-        return self.norm(combined)
+        # Digital: 仅激活前num_users个分支 [B, num_users, 2]
+        digital_outputs = [self.digital_branches[i](x).view(-1, 1, 2)
+                          for i in range(num_users)]
+        digital_combined = torch.cat(digital_outputs, dim=1)
+
+        # 补零到num_rf_chains维度 [B, num_rf_chains, 2]
+        if num_users < self.num_rf_chains:
+            padding = torch.zeros(x.size(0),
+                                 self.num_rf_chains - num_users,
+                                 2, device=x.device)
+            digital_combined = torch.cat([digital_combined, padding], dim=1)
+
+        # Analog: [B, num_rf_chains, num_antennas, 2]
+        analog_output = self.analog_beamformer(x).view(-1, self.num_rf_chains, self.num_antennas, 2)
+
+        # Hybrid: 数字权重 * 模拟矩阵 [B, num_antennas, 2]
+        hybrid_output = torch.einsum('brf,brnf->bnf', digital_combined, analog_output)
+        hybrid_output = hybrid_output.flatten(1)  # [B, 32]
+
+        return self.norm(hybrid_output)
 
 
 # ====================== load_model ========================
@@ -67,7 +137,7 @@ def load_model(rho):
     # model = FairBeamformingNet(input_size=num_users + len(target_angles))
 
     input_size = 2 * (num_users * num_antennas + num_targets * num_antennas) + 1
-    model = FairBeamformingNet(input_size, hidden_size=512, num_users=num_users).to(device)
+    model = FairBeamformingNet(input_size, hidden_size=512, max_users=num_users).to(device)
     if os.path.exists(model_name):
         model.load_state_dict(torch.load(model_name, map_location=device, weights_only=True))
         model.eval()
@@ -179,78 +249,78 @@ def calculate_sum_rate(weights, user_angles, snr_db):
 #     return best_nest
 
 
-def grey_wolf_optimizer(objective, bounds, num_wolves=30, max_iter=100):
-    dim = len(bounds)
-    wolves = np.array([[np.random.uniform(b[0], b[1]) for b in bounds] for _ in range(num_wolves)])
-    fitness = np.array([objective(wolf) for wolf in wolves])
-    alpha, beta, delta = wolves[np.argsort(fitness)[:3]]
-    alpha_fitness, beta_fitness, delta_fitness = np.sort(fitness)[:3]
-
-    for t in range(max_iter):
-        a = 2 - 2 * (t / max_iter)
-        for i in range(num_wolves):
-            A1 = a * (2 * np.random.rand(dim) - 1)
-            C1 = 2 * np.random.rand(dim)
-            X1 = alpha - A1 * np.abs(C1 * alpha - wolves[i])
-            A2 = a * (2 * np.random.rand(dim) - 1)
-            C2 = 2 * np.random.rand(dim)
-            X2 = beta - A2 * np.abs(C2 * beta - wolves[i])
-            A3 = a * (2 * np.random.rand(dim) - 1)
-            C3 = 2 * np.random.rand(dim)
-            X3 = delta - A3 * np.abs(C3 * delta - wolves[i])
-            new_wolf = (X1 + X2 + X3) / 3
-            new_wolf = np.clip(new_wolf, [b[0] for b in bounds], [b[1] for b in bounds])
-            new_fitness = objective(new_wolf)
-            if new_fitness < fitness[i]:
-                wolves[i] = new_wolf
-                fitness[i] = new_fitness
-
-        sorted_indices = np.argsort(fitness)
-        alpha, beta, delta = wolves[sorted_indices[:3]]
-        alpha_fitness, beta_fitness, delta_fitness = fitness[sorted_indices[:3]]
-    return alpha
-
-
-def whale_optimization_algorithm(objective, bounds, num_whales=30, max_iter=100):
-    dim = len(bounds)
-    whales = np.array([[np.random.uniform(b[0], b[1]) for b in bounds] for _ in range(num_whales)])
-    fitness = np.array([objective(whale) for whale in whales])
-    best_whale = whales[np.argmin(fitness)]
-    best_fitness = np.min(fitness)
-
-    for t in range(max_iter):
-        a = 2 - 2 * (t / max_iter)
-        a2 = -1 + t * (-1 / max_iter)
-        for i in range(num_whales):
-            r = np.random.rand()
-            A = 2 * a * r - a
-            C = 2 * r
-            l = (a2 - 1) * np.random.rand() + 1
-            p = np.random.rand()
-
-            if p < 0.5:
-                if np.abs(A) < 1:
-                    D = np.abs(C * best_whale - whales[i])
-                    new_whale = best_whale - A * D
-                else:
-                    rand_index = np.random.randint(0, num_whales)
-                    rand_whale = whales[rand_index]
-                    D = np.abs(C * rand_whale - whales[i])
-                    new_whale = rand_whale - A * D
-            else:
-                D = np.abs(best_whale - whales[i])
-                new_whale = D * np.exp(l) * np.cos(2 * np.pi * l) + best_whale
-
-            new_whale = np.clip(new_whale, [b[0] for b in bounds], [b[1] for b in bounds])
-            new_fitness = objective(new_whale)
-            if new_fitness < fitness[i]:
-                whales[i] = new_whale
-                fitness[i] = new_fitness
-
-        if np.min(fitness) < best_fitness:
-            best_whale = whales[np.argmin(fitness)]
-            best_fitness = np.min(fitness)
-    return best_whale
+# def grey_wolf_optimizer(objective, bounds, num_wolves=30, max_iter=100):
+#     dim = len(bounds)
+#     wolves = np.array([[np.random.uniform(b[0], b[1]) for b in bounds] for _ in range(num_wolves)])
+#     fitness = np.array([objective(wolf) for wolf in wolves])
+#     alpha, beta, delta = wolves[np.argsort(fitness)[:3]]
+#     alpha_fitness, beta_fitness, delta_fitness = np.sort(fitness)[:3]
+#
+#     for t in range(max_iter):
+#         a = 2 - 2 * (t / max_iter)
+#         for i in range(num_wolves):
+#             A1 = a * (2 * np.random.rand(dim) - 1)
+#             C1 = 2 * np.random.rand(dim)
+#             X1 = alpha - A1 * np.abs(C1 * alpha - wolves[i])
+#             A2 = a * (2 * np.random.rand(dim) - 1)
+#             C2 = 2 * np.random.rand(dim)
+#             X2 = beta - A2 * np.abs(C2 * beta - wolves[i])
+#             A3 = a * (2 * np.random.rand(dim) - 1)
+#             C3 = 2 * np.random.rand(dim)
+#             X3 = delta - A3 * np.abs(C3 * delta - wolves[i])
+#             new_wolf = (X1 + X2 + X3) / 3
+#             new_wolf = np.clip(new_wolf, [b[0] for b in bounds], [b[1] for b in bounds])
+#             new_fitness = objective(new_wolf)
+#             if new_fitness < fitness[i]:
+#                 wolves[i] = new_wolf
+#                 fitness[i] = new_fitness
+#
+#         sorted_indices = np.argsort(fitness)
+#         alpha, beta, delta = wolves[sorted_indices[:3]]
+#         alpha_fitness, beta_fitness, delta_fitness = fitness[sorted_indices[:3]]
+#     return alpha
+#
+#
+# def whale_optimization_algorithm(objective, bounds, num_whales=30, max_iter=100):
+#     dim = len(bounds)
+#     whales = np.array([[np.random.uniform(b[0], b[1]) for b in bounds] for _ in range(num_whales)])
+#     fitness = np.array([objective(whale) for whale in whales])
+#     best_whale = whales[np.argmin(fitness)]
+#     best_fitness = np.min(fitness)
+#
+#     for t in range(max_iter):
+#         a = 2 - 2 * (t / max_iter)
+#         a2 = -1 + t * (-1 / max_iter)
+#         for i in range(num_whales):
+#             r = np.random.rand()
+#             A = 2 * a * r - a
+#             C = 2 * r
+#             l = (a2 - 1) * np.random.rand() + 1
+#             p = np.random.rand()
+#
+#             if p < 0.5:
+#                 if np.abs(A) < 1:
+#                     D = np.abs(C * best_whale - whales[i])
+#                     new_whale = best_whale - A * D
+#                 else:
+#                     rand_index = np.random.randint(0, num_whales)
+#                     rand_whale = whales[rand_index]
+#                     D = np.abs(C * rand_whale - whales[i])
+#                     new_whale = rand_whale - A * D
+#             else:
+#                 D = np.abs(best_whale - whales[i])
+#                 new_whale = D * np.exp(l) * np.cos(2 * np.pi * l) + best_whale
+#
+#             new_whale = np.clip(new_whale, [b[0] for b in bounds], [b[1] for b in bounds])
+#             new_fitness = objective(new_whale)
+#             if new_fitness < fitness[i]:
+#                 whales[i] = new_whale
+#                 fitness[i] = new_fitness
+#
+#         if np.min(fitness) < best_fitness:
+#             best_whale = whales[np.argmin(fitness)]
+#             best_fitness = np.min(fitness)
+#     return best_whale
 
 # ====================== MMSE ======================
 class MMSEBeamformer:
@@ -324,68 +394,68 @@ class ZFBeamformer:
 #     return -min_gain + 0.1 * np.sum(gains)
 
 
-# ====================== Objective function ======================
-def objective(w, rho_set=0.1):
-    """Objective function with communication-sensing weights"""
-    w_cplx = w[:num_antennas] + 1j * w[num_antennas:]
-
-    # Communication Performance Calculation (User Direction)
-    user_gains = []
-    for angle in user_angles:
-        sv = np.exp(1j * 2 * np.pi * d * np.arange(num_antennas) * np.sin(np.deg2rad(angle)) / wavelength)
-        user_gains.append(np.abs(w_cplx @ sv.conj()))
-        min_user_gain = np.min(user_gains)
-        sum_user_gain = np.sum(user_gains)
-
-    # Perceptual Performance Computing (Target Direction)
-    target_gains = []
-    for angle in target_angles:
-        sv = np.exp(1j * 2 * np.pi * d * np.arange(num_antennas) * np.sin(np.deg2rad(angle)) / wavelength)
-    target_gains.append(np.abs(w_cplx @ sv.conj()))
-    avg_target_gain = np.mean(target_gains)
-
-    # Combine multiple targets
-    comm_perf = min_user_gain + 0.1 * sum_user_gain
-    sens_perf = avg_target_gain
-    return -(rho_set * 2.5 * comm_perf + (1 - rho_set) * sens_perf)
+# # ====================== Objective function ======================
+# def objective(w, rho_set=0.1):
+#     """Objective function with communication-sensing weights"""
+#     w_cplx = w[:num_antennas] + 1j * w[num_antennas:]
 #
+#     # Communication Performance Calculation (User Direction)
+#     user_gains = []
+#     for angle in user_angles:
+#         sv = np.exp(1j * 2 * np.pi * d * np.arange(num_antennas) * np.sin(np.deg2rad(angle)) / wavelength)
+#         user_gains.append(np.abs(w_cplx @ sv.conj()))
+#         min_user_gain = np.min(user_gains)
+#         sum_user_gain = np.sum(user_gains)
 #
-def traditional_optimizer(method='ZF', rho=0.5):
-    bounds = [(-1, 1)] * (2 * num_antennas)
-
-    def torch_objective(w):
-        w_tensor = torch.tensor(w, dtype=torch.float32, device=device)
-        return objective(w_tensor, rho).item()
-
-    if method == 'DE':
-        result = differential_evolution(torch_objective, bounds, maxiter=100, popsize=15)
-        weights = torch.tensor(result.x, dtype=torch.float32, device=device)
-    elif method == 'PSO':
-        lb = [b[0] for b in bounds]
-        ub = [b[1] for b in bounds]
-        xopt, _ = pso(torch_objective, lb, ub, swarmsize=30, maxiter=100)
-        weights = torch.tensor(xopt, dtype=torch.float32, device=device)
-    # elif method == 'CS':
-    #     xopt = cuckoo_search(torch_objective, bounds)
-    #     weights = torch.tensor(xopt, dtype=torch.float32, device=device)
-    elif method == 'GWO':
-        xopt = grey_wolf_optimizer(torch_objective, bounds)
-        weights = torch.tensor(xopt, dtype=torch.float32, device=device)
-    elif method == 'WOA':
-        xopt = whale_optimization_algorithm(torch_objective, bounds)
-        weights = torch.tensor(xopt, dtype=torch.float32, device=device)
-    elif method == 'ZF':
-        zf_bf = ZFBeamformer(user_angles)
-        weights = zf_bf.get_weights_for_jcas(target_angles, rho=rho)
-        weights = torch.tensor(weights, dtype=torch.float32, device=device)
-    elif method == 'MMSE':
-        mmse_bf = MMSEBeamformer(user_angles)
-        weights = mmse_bf.get_weights()
-        weights = torch.tensor(weights, dtype=torch.float32, device=device)
-    else:
-        raise ValueError(f"Unknown method: {method}")
-
-    return weights
+#     # Perceptual Performance Computing (Target Direction)
+#     target_gains = []
+#     for angle in target_angles:
+#         sv = np.exp(1j * 2 * np.pi * d * np.arange(num_antennas) * np.sin(np.deg2rad(angle)) / wavelength)
+#     target_gains.append(np.abs(w_cplx @ sv.conj()))
+#     avg_target_gain = np.mean(target_gains)
+#
+#     # Combine multiple targets
+#     comm_perf = min_user_gain + 0.1 * sum_user_gain
+#     sens_perf = avg_target_gain
+#     return -(rho_set * 2.5 * comm_perf + (1 - rho_set) * sens_perf)
+# #
+# #
+# def traditional_optimizer(method='ZF', rho=0.5):
+#     bounds = [(-1, 1)] * (2 * num_antennas)
+#
+#     def torch_objective(w):
+#         w_tensor = torch.tensor(w, dtype=torch.float32, device=device)
+#         return objective(w_tensor, rho).item()
+#
+#     if method == 'DE':
+#         result = differential_evolution(torch_objective, bounds, maxiter=100, popsize=15)
+#         weights = torch.tensor(result.x, dtype=torch.float32, device=device)
+#     elif method == 'PSO':
+#         lb = [b[0] for b in bounds]
+#         ub = [b[1] for b in bounds]
+#         xopt, _ = pso(torch_objective, lb, ub, swarmsize=30, maxiter=100)
+#         weights = torch.tensor(xopt, dtype=torch.float32, device=device)
+#     # elif method == 'CS':
+#     #     xopt = cuckoo_search(torch_objective, bounds)
+#     #     weights = torch.tensor(xopt, dtype=torch.float32, device=device)
+#     elif method == 'GWO':
+#         xopt = grey_wolf_optimizer(torch_objective, bounds)
+#         weights = torch.tensor(xopt, dtype=torch.float32, device=device)
+#     elif method == 'WOA':
+#         xopt = whale_optimization_algorithm(torch_objective, bounds)
+#         weights = torch.tensor(xopt, dtype=torch.float32, device=device)
+#     elif method == 'ZF':
+#         zf_bf = ZFBeamformer(user_angles)
+#         weights = zf_bf.get_weights_for_jcas(target_angles, rho=rho)
+#         weights = torch.tensor(weights, dtype=torch.float32, device=device)
+#     elif method == 'MMSE':
+#         mmse_bf = MMSEBeamformer(user_angles)
+#         weights = mmse_bf.get_weights()
+#         weights = torch.tensor(weights, dtype=torch.float32, device=device)
+#     else:
+#         raise ValueError(f"Unknown method: {method}")
+#
+#     return weights
 
 
 # ====================== The main execution process ========================
@@ -397,18 +467,19 @@ def main():
     for rho in rho_values:
         print(f"\nProcessing ρ={rho:.1f}")
 
+        test_Hc = generate_communication_channel(num_antennas, user_angles)
+        test_Hs = generate_sensing_channel(num_antennas, target_angles)
+
+        # 准备输入数据
+        Hc_r = torch.FloatTensor(test_Hc.real).unsqueeze(0).to(device)
+        Hc_i = torch.FloatTensor(test_Hc.imag).unsqueeze(0).to(device)
+        Hs_r = torch.FloatTensor(test_Hs.real).unsqueeze(0).to(device)
+        Hs_i = torch.FloatTensor(test_Hs.imag).unsqueeze(0).to(device)
+        rho_tensor = torch.FloatTensor([rho]).to(device)
+
         # DNN方法
         try:
             model = load_model(rho)
-            test_Hc = generate_communication_channel(num_antennas, user_angles)
-            test_Hs = generate_sensing_channel(num_antennas, target_angles)
-
-            # 准备输入数据
-            Hc_r = torch.FloatTensor(test_Hc.real).unsqueeze(0).to(device)
-            Hc_i = torch.FloatTensor(test_Hc.imag).unsqueeze(0).to(device)
-            Hs_r = torch.FloatTensor(test_Hs.real).unsqueeze(0).to(device)
-            Hs_i = torch.FloatTensor(test_Hs.imag).unsqueeze(0).to(device)
-            rho_tensor = torch.FloatTensor([rho]).to(device)
 
             with torch.no_grad():
                 # weights = model(input_data).squeeze()
@@ -431,8 +502,10 @@ def main():
         for method in methods[1:]:
             try:
 
-                weights = traditional_optimizer(method, rho)  # 不再需要.squeeze()
-
+                weights = traditional_optimizer(method, Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)  # 不再需要.squeeze()
+                # 在计算前转换为 PyTorch 张量
+                weights = torch.from_numpy(weights)  # 转换为 PyTorch 张量
+                weights = weights.to(torch.complex64)
                 # Calculate CRLB
                 precoder = weights[:num_antennas] + 1j * weights[num_antennas:]
                 precoder = precoder / torch.norm(precoder)

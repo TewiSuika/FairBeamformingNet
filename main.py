@@ -74,7 +74,7 @@ def main():
 
     if model_name:
         # Load an existing model
-        model = FairBeamformingNet(input_size, hidden_size=512, num_users=num_users).to(device)
+        model = FairBeamformingNet(input_size, hidden_size=512, max_users=num_users).to(device)
         try:
             model.load_state_dict(torch.load(model_name))
             print(f"The pretrained model was successfully loaded: {model_name}")
@@ -102,13 +102,12 @@ def main():
     with torch.no_grad():
         # dl_weights = model(test_input).numpy()[0]
         dl_weights = model(Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor).numpy()[0]
-        de_weights = traditional_optimizer('DE')
-        pso_weights = traditional_optimizer('PSO')
-        # cs_weights = traditional_optimizer('CS')
-        gwo_weights = traditional_optimizer('GWO')
-        woa_weights = traditional_optimizer('WOA')
-        zf_weights = traditional_optimizer('ZF')
-        mmse_weights = traditional_optimizer('MMSE')
+        de_weights = traditional_optimizer('DE', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
+        pso_weights = traditional_optimizer('PSO', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
+        gwo_weights = traditional_optimizer('GWO', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
+        woa_weights = traditional_optimizer('WOA', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
+        zf_weights = traditional_optimizer('ZF', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
+        mmse_weights = traditional_optimizer('MMSE', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
 
     # ========== Plot Combined Beam Patterns ==========
     plt.figure(figsize=(12, 6))

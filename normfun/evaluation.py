@@ -7,7 +7,7 @@ from config import *
 from normfun.modulation import qam16_modulate, qam16_demodulate
 import time
 
-# ====================== 评估函数 ======================
+# ====================== Evaluation functions ======================
 def evaluate_beamforming(weights, label=None, ax=None, plot_annotations=True, is_combined=False, color=None,
                          linestyle='-'):
     w_cplx = weights[:num_antennas] + 1j * weights[num_antennas:]
@@ -71,9 +71,6 @@ def calculate_user_rates(w, user_steering_vectors, snr_db, num_symbols=10000):
     #
     # return user_rates
 
-
-    """基于香农公式的速率计算"""
-    # 转换为复数权重并归一化
     real = w[:num_antennas]
     imag = w[num_antennas:]
     w_cplx = (real + 1j * imag) / np.linalg.norm(real + 1j * imag)  # 重要：功率归一化
@@ -84,14 +81,14 @@ def calculate_user_rates(w, user_steering_vectors, snr_db, num_symbols=10000):
     for k in range(len(user_steering_vectors)):
         h_k = user_steering_vectors[k]
 
-        # 计算有效信道增益
+        # Calculate the effective channel gain
         effective_gain = np.abs(np.dot(w_cplx.conj(), h_k))
 
-        # 计算信噪比
+        # Calculate the signal-to-noise ratio
         signal_power = (effective_gain ** 2) * snr_linear  # 考虑发射功率
         noise_power = 1.0  # 归一化噪声功率
 
-        # 香农容量公式
+        # Shannon Capacity Formula
         rate = np.log2(1 + signal_power / noise_power)
         user_rates.append(rate)
 
@@ -111,9 +108,9 @@ def generate_da_theta(Nt, theta, a):
     da = derivative_factor * a.squeeze()
     return da.reshape(-1, 1)
 
+
 # ====================== CRLB Calculation =======================
 def calculate_CRLB(Nt, Nr, target_angle, precoder, snr_db):
-    # 类型和设备处理
 
     if isinstance(precoder, np.ndarray):
         precoder = torch.tensor(precoder, dtype=torch.complex64, device=device)
@@ -122,21 +119,19 @@ def calculate_CRLB(Nt, Nr, target_angle, precoder, snr_db):
     SNR_radar = 10 ** (snr_db / 10)
     Pt = 1
 
-    # 生成导向向量（确保complex64类型）
     a = generate_a_theta(Nt, target_angle).to(torch.complex64)
     da = generate_da_theta(Nt, target_angle, a).to(torch.complex64)
     b = generate_a_theta(Nr, target_angle).to(torch.complex64)
     db = generate_da_theta(Nr, target_angle, b).to(torch.complex64)
 
-    # 归一化预编码器
+    # Normalize the preencoder
     precoder = precoder / torch.norm(precoder)
 
-    # 计算相关矩阵
+    # Calculate the correlation matrix
     A = a @ b.T.conj()
     dot_A = da @ b.T.conj() + a @ db.T.conj()
     Rx = precoder.reshape(-1, 1) @ precoder.reshape(-1, 1).T.conj()
 
-    # 计算各项（确保使用.real取实部）
     term1 = torch.trace(A @ Rx @ A.T.conj()).real
     term2 = torch.trace(dot_A @ Rx @ dot_A.T.conj()).real
     term3 = torch.trace(A @ Rx @ dot_A.T.conj()).real
@@ -153,9 +148,9 @@ def calculate_CRLB(Nt, Nr, target_angle, precoder, snr_db):
     CRLB = torch.sqrt(alpha * (term1.real / (term2.real * term1.real - (abs(term3.real)) ** 2))) * 180 / pi
     return torch.sqrt(CRLB)
 
-# ====================== 新增性能评估函数 ======================
+# ====================== Performance evaluation function ======================
 def calculate_ber(w, user_steering_vectors, snr_db, num_symbols=10000):
-    """计算误码率(BER)"""
+    """Calculating the Bit Error Rate (BER)"""
     w_cplx = w[:num_antennas] + 1j * w[num_antennas:]
     w_cplx /= np.linalg.norm(w_cplx)
     bers = []
@@ -173,11 +168,11 @@ def calculate_ber(w, user_steering_vectors, snr_db, num_symbols=10000):
         ber = np.mean(np.abs(np.array(rx_bits) - bits))
         bers.append(ber)
 
-    return np.mean(bers)  # 返回平均误码率
+    return np.mean(bers)
 
-# ================== 计时函数 ==================
+# ================== Timing function ==================
 def time_method(method_func, *args, num_runs=10, **kwargs):
-    """运行方法并返回平均时间（秒）"""
+    """Run the method and return the average time (seconds)"""
     times = []
     for _ in range(num_runs):
         start = time.time()

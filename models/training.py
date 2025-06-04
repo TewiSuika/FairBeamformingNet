@@ -95,7 +95,7 @@ def train_model(rho_set=None):
 
     # 模型参数
     # input_size = 2 * (num_users * num_antennas + num_targets * num_antennas) + 1
-    model = FairBeamformingNet(input_size, hidden_size=512, num_users=num_users).to(device)  # 减小隐藏层大小
+    model = FairBeamformingNet(input_size, hidden_size=512, max_users=num_users,num_rf_chains=num_rf_chains).to(device)  # 减小隐藏层大小
     criterion = MultiTaskLoss(rho=rho, lambda_reg=0.1)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
