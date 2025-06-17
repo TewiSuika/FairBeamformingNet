@@ -1,5 +1,5 @@
 """
-调制解调模块
+Modem module
 """
 import numpy as np
 
@@ -23,7 +23,7 @@ def qam16_modulate(bits):
 
 
 def qam16_demodulate(symbols):
-    """16QAM解调"""
+    """16QAM"""
     bits = []
     for s in symbols:
         # 判决区域
