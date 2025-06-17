@@ -1,6 +1,6 @@
 from config import *
 from algorithms.traditional import ZFBeamformer
-from models.beamforming import get_model_name, FairBeamformingNet, MultiTaskLoss
+from models.FBN_model import get_model_name, FairBeamformingNet, MultiTaskLoss
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 import random
