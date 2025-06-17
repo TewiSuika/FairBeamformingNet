@@ -7,7 +7,7 @@ import seaborn as sns
 from tqdm import tqdm
 import torch.optim as optim
 from config import *
-from models.beamforming import FairBeamformingNet, check_model_exists, MultiTaskLoss, get_model_name
+from models.FBN_model import FairBeamformingNet, check_model_exists, MultiTaskLoss, get_model_name
 from models.training import generate_training_data
 from algorithms.traditional import ZFBeamformer, MMSEBeamformer
 from algorithms.optimization import traditional_optimizer
@@ -88,8 +88,8 @@ def main():
 
     # test_input = torch.tensor([user_angles + target_angles], dtype=torch.float32)
 
-    test_Hc = generate_communication_channel(num_antennas, user_angles)
-    test_Hs = generate_sensing_channel(num_antennas, target_angles)
+    test_Hc = generate_communication_channel(num_antennas, user_angles, random_seed=SEED)
+    test_Hs = generate_sensing_channel(num_antennas, target_angles, random_seed=SEED)
 
     # 准备输入数据
     Hc_r = torch.FloatTensor(test_Hc.real).unsqueeze(0).to(device)
@@ -124,18 +124,21 @@ def main():
         (zf_weights, "ZF Beamforming", '#00CED1', (0, (1, 1))),
         (mmse_weights, "MMSE Beamforming", '#FF8C00', (0, (3, 5, 1, 5)))
     ]
+    # print(zf_weights.shape)
 
     # Plot beam patterns for all methods
     for weights, label, color, linestyle in methods:
+        print(label)
+        # print(weights.shape)
         evaluate_beamforming(weights, label=label, ax=ax_combined, is_combined=True, color=color, linestyle=linestyle)
 
     # Add user and target annotations
-        # User angle colors (more visible)
-        user_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-                       '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+    # User angle colors (more visible)
+    user_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+                   '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
 
-        # Target angle colors (more visible)
-        target_colors = ['#ff9896', '#98df8a', '#ffbb78', '#c5b0d5', '#dbdb8d']
+    # Target angle colors (more visible)
+    target_colors = ['#ff9896', '#98df8a', '#ffbb78', '#c5b0d5', '#dbdb8d']
     from matplotlib.lines import Line2D
     legend_elements = [
                           Line2D([0], [0], color=user_colors[idx], linestyle='--', label=f'User {idx + 1}')
