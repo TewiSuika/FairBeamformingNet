@@ -1,6 +1,7 @@
 
 from config import *
 from tqdm import tqdm
+import numpy as np
 
 # ====================== Channel generation function ======================
 def generate_array_response(num_antennas, angle_deg):
@@ -9,7 +10,9 @@ def generate_array_response(num_antennas, angle_deg):
     return np.exp(-1j * np.pi * n * np.sin(theta)) / np.sqrt(num_antennas)
 
 
-def generate_sensing_channel(num_antennas, target_angles, num_paths=3):
+def generate_sensing_channel(num_antennas, target_angles, num_paths=3, random_seed=None):
+    if random_seed is not None:
+        np.random.seed(random_seed)
     H_s = np.zeros((len(target_angles), num_antennas), dtype=np.complex64)
     for t, target_angle in enumerate(target_angles):
         # LOS
@@ -29,7 +32,9 @@ def generate_sensing_channel(num_antennas, target_angles, num_paths=3):
     return H_s
 
 
-def generate_communication_channel(num_antennas, user_angles, num_paths=3):
+def generate_communication_channel(num_antennas, user_angles, num_paths=3, random_seed=None):
+    if random_seed is not None:
+        np.random.seed(random_seed)
     H_c = np.zeros((len(user_angles), num_antennas), dtype=np.complex64)
     for u, user_angle in enumerate(user_angles):
         a_u = generate_array_response(num_antennas, user_angle)
