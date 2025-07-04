@@ -7,7 +7,7 @@ import seaborn as sns
 from tqdm import tqdm
 import torch.optim as optim
 from config import *
-from models.beamforming import FairBeamformingNet, check_model_exists, MultiTaskLoss, get_model_name
+from models.FBN_model import FairBeamformingNet, check_model_exists, MultiTaskLoss, get_model_name
 from models.training import generate_training_data
 from algorithms.traditional import ZFBeamformer, MMSEBeamformer
 from algorithms.optimization import traditional_optimizer
@@ -66,6 +66,86 @@ from models.training import train_model
 #
 #     return model, model_name
 
+def plot_dnn_semicircular_beam_pattern(weights):
+    plt.figure(figsize=(10, 10))
+
+    # Parameter settings
+    radius = 10  # Half-circle radius
+    center = (0, 10)  # Base station coordinates
+
+    # Get beam pattern data
+    theta_range = np.linspace(-90, 90, 361)
+    pattern = evaluate_beamforming(weights, plot_annotations=False)
+
+    # Convert the dB mode to a linear scale and normalize it
+    pattern_linear = 10 ** (pattern / 20)
+    pattern_linear = (pattern_linear - np.min(pattern_linear)) / (
+                np.max(pattern_linear) - np.min(pattern_linear)) * radius
+
+    # Filter the half-circle angle range and rotate it by 90 degrees
+    semicircle_mask = (theta_range >= -90) & (theta_range <= 90)
+    semicircle_theta = theta_range[semicircle_mask]
+    semicircle_pattern = pattern_linear[semicircle_mask]
+
+    # Rotate 90 degrees (0° pointing to the right) and convert to radians
+    plot_angles = np.deg2rad(-semicircle_theta)
+
+    # Calculate coordinates
+    x = center[0] + semicircle_pattern * np.cos(plot_angles)
+    y = center[1] + semicircle_pattern * np.sin(plot_angles)
+
+    # Draw a semicircular beammap
+    plt.plot(x, y, color='#1f77b4', linewidth=3, label='Beampattern')
+    plt.fill_betweenx(y, center[0], x, color='#1f77b4', alpha=0.15)
+
+    # Draw the base station
+    plt.scatter(center[0], center[1], color='#d62728', s=300, marker='^',
+                edgecolor='black', linewidth=1.5, label='Base Station')
+    distance = [12, 17, 15, 11]
+
+    # Draw the communication user
+    for i, angle in enumerate(user_angles):
+        plot_angle = np.deg2rad(-angle)
+        patient_x = center[0] + distance[i] * np.cos(plot_angle)
+        patient_y = center[1] + distance[i] * np.sin(plot_angle)
+        plt.scatter(patient_x, patient_y, color='#2ca02c', s=150,
+                    edgecolor='black', linewidth=1, label=f'Communicating User' if i == 0 else "")
+
+    # Draw the sensing target
+    for i, angle in enumerate(target_angles):
+        plot_angle = np.deg2rad(-angle)
+        target_x = center[0] + 11 * np.cos(plot_angle)
+        target_y = center[1] + 11 * np.sin(plot_angle)
+        plt.scatter(target_x, target_y, color='#ff7f0e', s=200, marker='X',
+                    edgecolor='black', linewidth=1.5, label=f'Sensing Target' if i == 0 else "")
+
+    # Set the graphics properties
+    plt.xlim(0, 20)
+    plt.ylim(0, 20)
+    plt.xlabel('Distance (meters)', fontsize=12, fontweight='bold')
+    plt.ylabel('Distance (meters)', fontsize=12, fontweight='bold')
+    plt.title('DNN-based beamforming',
+              fontsize=14, fontweight='bold', pad=20)
+    plt.grid(True, linestyle='--', alpha=0.6)
+
+    # Add direction indication
+    # plt.quiver(center[0], center[1], 3, 0, color='black', scale=10, width=0.01, headwidth=5)
+    # plt.text(center[0] + 3.5, center[1] + 0.5, '0°', fontsize=10, fontweight='bold')
+
+    # Create a legend
+    handles, labels = plt.gca().get_legend_handles_labels()
+    unique_labels = []
+    unique_handles = []
+    for handle, label in zip(handles, labels):
+        if label not in unique_labels:
+            unique_labels.append(label)
+            unique_handles.append(handle)
+    plt.legend(unique_handles, unique_labels, loc='upper left',
+               framealpha=1, edgecolor='black')
+
+    plt.tight_layout()
+    plt.savefig('DNN-based beamforming.png', dpi=300, bbox_inches='tight')
+    plt.show()
 
 # ====================== Main function ======================
 def main():
@@ -74,7 +154,7 @@ def main():
 
     if model_name:
         # Load an existing model
-        model = FairBeamformingNet(input_size, hidden_size=512, num_users=num_users).to(device)
+        model = FairBeamformingNet(input_size, hidden_size=512, max_users=num_users).to(device)
         try:
             model.load_state_dict(torch.load(model_name))
             print(f"The pretrained model was successfully loaded: {model_name}")
@@ -88,10 +168,10 @@ def main():
 
     # test_input = torch.tensor([user_angles + target_angles], dtype=torch.float32)
 
-    test_Hc = generate_communication_channel(num_antennas, user_angles)
-    test_Hs = generate_sensing_channel(num_antennas, target_angles)
+    test_Hc = generate_communication_channel(num_antennas, user_angles, random_seed=SEED)
+    test_Hs = generate_sensing_channel(num_antennas, target_angles, random_seed=SEED)
 
-    # 准备输入数据
+    # Prepare the input data
     Hc_r = torch.FloatTensor(test_Hc.real).unsqueeze(0).to(device)
     Hc_i = torch.FloatTensor(test_Hc.imag).unsqueeze(0).to(device)
     Hs_r = torch.FloatTensor(test_Hs.real).unsqueeze(0).to(device)
@@ -102,13 +182,14 @@ def main():
     with torch.no_grad():
         # dl_weights = model(test_input).numpy()[0]
         dl_weights = model(Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor).numpy()[0]
-        de_weights = traditional_optimizer('DE')
-        pso_weights = traditional_optimizer('PSO')
-        # cs_weights = traditional_optimizer('CS')
-        gwo_weights = traditional_optimizer('GWO')
-        woa_weights = traditional_optimizer('WOA')
-        zf_weights = traditional_optimizer('ZF')
-        mmse_weights = traditional_optimizer('MMSE')
+        de_weights = traditional_optimizer('DE', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
+        pso_weights = traditional_optimizer('PSO', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
+        gwo_weights = traditional_optimizer('GWO', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
+        woa_weights = traditional_optimizer('WOA', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
+        zf_weights = traditional_optimizer('ZF', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
+        mmse_weights = traditional_optimizer('MMSE', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
+
+    plot_dnn_semicircular_beam_pattern(dl_weights)
 
     # ========== Plot Combined Beam Patterns ==========
     plt.figure(figsize=(12, 6))
@@ -125,18 +206,21 @@ def main():
         (zf_weights, "ZF Beamforming", '#00CED1', (0, (1, 1))),
         (mmse_weights, "MMSE Beamforming", '#FF8C00', (0, (3, 5, 1, 5)))
     ]
+    # print(zf_weights.shape)
 
     # Plot beam patterns for all methods
     for weights, label, color, linestyle in methods:
+        print(label)
+        # print(weights.shape)
         evaluate_beamforming(weights, label=label, ax=ax_combined, is_combined=True, color=color, linestyle=linestyle)
 
     # Add user and target annotations
-        # User angle colors (more visible)
-        user_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-                       '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+    # User angle colors (more visible)
+    user_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+                   '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
 
-        # Target angle colors (more visible)
-        target_colors = ['#ff9896', '#98df8a', '#ffbb78', '#c5b0d5', '#dbdb8d']
+    # Target angle colors (more visible)
+    target_colors = ['#ff9896', '#98df8a', '#ffbb78', '#c5b0d5', '#dbdb8d']
     from matplotlib.lines import Line2D
     legend_elements = [
                           Line2D([0], [0], color=user_colors[idx], linestyle='--', label=f'User {idx + 1}')
@@ -206,7 +290,7 @@ def main():
                 user_rates[method][user_key].append(rate)
                 print(f"[Debug] Stored {user_key} rate: {rate} at SNR {snr_db}dB")
 
-    # 数据验证
+    # Data validation
     for method in methods:
         print(f"\nData verification for {method}:")
         for user in user_rates[method]:
@@ -215,7 +299,7 @@ def main():
             if data_points != len(snr_dBs):
                 print(f"  !!! Data length mismatch for {user}")
 
-    # 绘图修正
+    # Drawing corrections
     plt.figure(figsize=(10, 6))
     colors = ['#FF6B6B', '#4D96FF', '#6BCB77', '#FFD700', '#8A2BE2', '#FF1493', '#00CED1', '#FF8C00']
     markers = ['o', 's', '^', 'D', 'v', 'p', '*', 'X']
