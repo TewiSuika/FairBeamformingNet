@@ -8,27 +8,27 @@ from algorithms.optimization import traditional_optimizer
 # ====================== System parameter configuration =======================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 user_angles = [-20, 10, 25, 60]
+
 target_angles = [-45]
 num_antennas = 16
 num_receiver_antennas = 16
 num_users = len(user_angles)
 num_targets = len(target_angles)
-snr_db = 20
+snr_db = 10
 wavelength = 1
 d = wavelength / 2
-rho_values = np.arange(0, 1.1, 0.1)
+rho_values = np.arange(0, 1.05, 0.05)
+print(rho_values)
 CRLB_SCALE_FACTOR = 100
-SEED = 42
-
+SEED = 26
 
 class FairBeamformingNet(nn.Module):
-    def __init__(self, input_size, hidden_size=512, max_users=4, num_rf_chains=8):
+    def __init__(self, input_size, hidden_size=512, max_users=4, num_rf_chains=4):
         super().__init__()
-        self.max_users = max_users  # 最大用户数（动态用户数需≤此值）
+        self.max_users = max_users  # Maximum number of users (dynamic number of users needs to ≤ this value)
         self.num_rf_chains = num_rf_chains
-        self.num_antennas = 16  # 输出 32 = 16 * 2
+        self.num_antennas = 16
 
-        # 检查RF链数是否足够支持最大用户数
         assert max_users <= num_rf_chains, "max_users cannot exceed num_rf_chains"
 
         # Shared network
@@ -39,16 +39,16 @@ class FairBeamformingNet(nn.Module):
             nn.ReLU()
         )
 
-        # Digital branches (每个用户输出2维复数)
+        # Digital branches
         self.digital_branches = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(hidden_size, hidden_size),
                 nn.ReLU(),
                 nn.Linear(hidden_size, 2)
-            ) for _ in range(max_users)  # 初始化最大可能的分支
+            ) for _ in range(max_users)
         ])
 
-        # Analog beamformer (输出 num_rf_chains * num_antennas * 2)
+        # Analog beamformer (num_rf_chains * num_antennas * 2)
         self.analog_beamformer = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
@@ -58,27 +58,20 @@ class FairBeamformingNet(nn.Module):
         self.norm = nn.LayerNorm(num_antennas * 2)
 
     def forward(self, Hc_real, Hc_imag, Hs_real, Hs_imag, rho, num_users=None):
-        """
-        Args:
-            num_users: 当前batch的动态用户数（需≤max_users）
-                      若为None，默认使用max_users
-        """
+
         if num_users is None:
             num_users = self.max_users
         assert num_users <= self.max_users, f"num_users ({num_users}) > max_users ({self.max_users})"
 
-        # 输入处理
         Hc = torch.cat([Hc_real.flatten(1), Hc_imag.flatten(1)], dim=1)
         Hs = torch.cat([Hs_real.flatten(1), Hs_imag.flatten(1)], dim=1)
         x = torch.cat([Hc, Hs, rho.view(-1, 1)], dim=1)
         x = self.shared_net(x)
 
-        # Digital: 仅激活前num_users个分支 [B, num_users, 2]
         digital_outputs = [self.digital_branches[i](x).view(-1, 1, 2)
                           for i in range(num_users)]
         digital_combined = torch.cat(digital_outputs, dim=1)
 
-        # 补零到num_rf_chains维度 [B, num_rf_chains, 2]
         if num_users < self.num_rf_chains:
             padding = torch.zeros(x.size(0),
                                  self.num_rf_chains - num_users,
@@ -88,7 +81,7 @@ class FairBeamformingNet(nn.Module):
         # Analog: [B, num_rf_chains, num_antennas, 2]
         analog_output = self.analog_beamformer(x).view(-1, self.num_rf_chains, self.num_antennas, 2)
 
-        # Hybrid: 数字权重 * 模拟矩阵 [B, num_antennas, 2]
+        # Hybrid: [B, num_antennas, 2]
         hybrid_output = torch.einsum('brf,brnf->bnf', digital_combined, analog_output)
         hybrid_output = hybrid_output.flatten(1)  # [B, 32]
 
@@ -194,10 +187,12 @@ def main():
     results = {m: {'crlb': [], 'sum_rate': []} for m in methods}
 
     for rho in rho_values:
-        print(f"\nProcessing ρ={rho:.1f}")
+        print(f"\nProcessing ρ={rho:.2f}")
 
         test_Hc = generate_communication_channel(num_antennas, user_angles, random_seed=SEED)
         test_Hs = generate_sensing_channel(num_antennas, target_angles, random_seed=SEED)
+        # test_Hc = generate_communication_channel(num_antennas, user_angles)
+        # test_Hs = generate_sensing_channel(num_antennas, target_angles)
         # print(test_Hc)
 
         # 准备输入数据
@@ -253,74 +248,72 @@ def main():
 
     # == == == == == == == == == == == Visualize the results == == == == == == == == == == == ==
     # plt.figure(figsize=(12, 7))
+    plt.rcParams.update({'font.size': 20})
 
     # Create the graph and the first Y-axis
     fig, ax1 = plt.subplots(figsize=(12, 7))
-
-
-    plt.rcParams.update({'font.size': 20})
-
-    # Draw CRLB (Left Y-axis - Blue)
-    color_crlb = '#2E86C1'
     ax1.set_xlabel("Communication-Sensing Weight (ρ)", fontsize=20)
-    ax1.set_ylabel("CRLB (°)", fontsize=20, color=color_crlb)
+    ax1.set_ylabel("CRLB (°)", fontsize=20)
     ax1.set_xticks(np.arange(0, 1.1, 0.1))
     ax1.grid(True, linestyle='--', alpha=0.7)
 
-
-    # Draw Sum Rate (Right Y Axis - Red)
-    color_rate = '#E74C3C'
+    # Draw Sum Rate (Right Y Axis)
     ax2 = ax1.twinx()
-    ax2.set_ylabel("Sum Rate (bps/Hz)", fontsize=20, color=color_rate)
+    ax2.set_ylabel("Sum Rate (bps/Hz)", fontsize=20)
 
-    # Draw a double indicator curve for each method
-    markers = ['o', 's', '^', 'v', 'D', 'p', '*', 'X']  # 8 different markup styles
-    line_styles = [
-        '-',
-        '--',
-        '-.',
-        ':',
-        (0, (3, 1, 1, 1)),
-        (0, (5, 5)),
-        (0, (1, 1)),
-        (0, (5, 1, 1, 1, 1, 1))
-    ]
+    # Color palette for methods
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728',
+              '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
+
+    # Line styles - CRLB solid, sum rate dashed
+    crlb_style = '-'
+    rate_style = '--'
+
+    # Markers for each method
+    markers = ['o', 's', '^', 'v', 'D', 'p', '*', 'X']
 
     for i, method in enumerate(methods):
         if method in results:
-            # CRLB Curve (Principal Axis)
-            ax1.plot(rho_values, results[method]['crlb'],
-                     marker=markers[i], linestyle=line_styles[i],
-                     color=color_crlb, markersize=8, linewidth=2,
-                     label=f'{method} CRLB')
+            # Set line width - thicker for DNN
+            line_width = 5 if method == 'DNN' else 2
 
-            # Sum Rate Curve (Minor Axis)
+            # Only plot CRLB for non-ZF/MMSE methods
+            if method not in ['ZF', 'MMSE']:
+                # CRLB Curve (Primary Axis - solid)
+                ax1.plot(rho_values, results[method]['crlb'],
+                         marker=markers[i], linestyle=crlb_style,
+                         color=colors[i], markersize=8, linewidth=line_width,
+                         label=f'{method} CRLB')
+
+            # Sum Rate Curve (Secondary Axis - dashed)
             ax2.plot(rho_values, results[method]['sum_rate'],
-                     marker=markers[i], linestyle=line_styles[i],
-                     color=color_rate, markersize=8, linewidth=2,
+                     marker=markers[i], linestyle=rate_style,
+                     color=colors[i], markersize=8, linewidth=line_width,
                      label=f'{method} Sum Rate')
 
-    # Merge legend
-    lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(
-        lines1 + lines2,
-        labels1 + labels2,
-        loc='upper right',
-        ncol=1,
-        fontsize=10,
-        framealpha=0.9
-    )
-
-    # Set the axis range
+    # Set axis limits
     crlb_max = max(max(res['crlb']) for res in results.values())
     rate_max = max(max(res['sum_rate']) for res in results.values())
-    ax1.set_ylim(0, crlb_max * 1.1)
-    ax2.set_ylim(0, rate_max * 1.1)
+    ax1.set_ylim(0, crlb_max * 1.4)
+    ax2.set_ylim(0, rate_max * 1.4)
+    ax1.set_xlim(0, 1.0)  # Strictly [0,1] range
 
+    # Merge and organize legend into two columns
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
 
-    # Title & Layout
-    # plt.title('Joint Communication and Sensing Performance', fontsize=22, pad=20)
+    # Combine all lines and labels
+    all_lines = lines1 + lines2
+    all_labels = labels1 + labels2
+
+    # Create legend with two columns
+    ax1.legend(all_lines, all_labels,
+               loc='upper left',
+               ncol=2,
+               fontsize=12,
+               framealpha=1.0)
+
+    # Adjust layout
     fig.tight_layout()
 
     # Save & Display

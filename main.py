@@ -15,6 +15,8 @@ from normfun.evaluation import calculate_user_rates, evaluate_beamforming, calcu
 # from normfun.visualization import plot_beam_pattern, plot_metric_comparison
 from models.channel_data_generate import generate_sensing_channel,generate_communication_channel
 from models.training import train_model
+from normfun.print_data import *
+
 
 # # ====================== Model training ======================
 # def train_model(rho = 0.8):
@@ -66,6 +68,127 @@ from models.training import train_model
 #
 #     return model, model_name
 
+def plot_dnn_semicircular_beam_pattern(weights):
+    plt.figure(figsize=(10, 10))
+
+    # Parameter settings
+    radius = 10  # Half-circle radius
+    center = (0, 10)  # Base station coordinates
+
+    # Get beam pattern data
+    theta_range = np.linspace(-90, 90, 361)
+    pattern = evaluate_beamforming(weights, plot_annotations=False)
+
+
+    # Convert the dB mode to a linear scale and normalize it
+    pattern_linear = 10 ** (pattern / 20)
+    pattern_linear = (pattern_linear - np.min(pattern_linear)) / (
+            np.max(pattern_linear) - np.min(pattern_linear)) * radius
+
+    # Filter the half-circle angle range and rotate it by 90 degrees
+    semicircle_mask = (theta_range >= -90) & (theta_range <= 90)
+    semicircle_theta = theta_range[semicircle_mask]
+    semicircle_pattern = pattern_linear[semicircle_mask]
+
+    print_beam_pattern_data(theta_range[semicircle_mask], pattern[semicircle_mask], "DNN")
+
+    # Rotate 90 degrees (0° pointing to the right) and convert to radians
+    plot_angles = np.deg2rad(-semicircle_theta)
+
+    # Calculate coordinates
+    x = center[0] + semicircle_pattern * np.cos(plot_angles)
+    y = center[1] + semicircle_pattern * np.sin(plot_angles)
+
+    # Draw a semicircular beammap
+    plt.plot(x, y, color='#1f77b4', linewidth=3, label='Beampattern')
+    plt.fill_betweenx(y, center[0], x, color='#1f77b4', alpha=0.15)
+
+    # 绘制基站（长方形，宽//x轴，长//y轴）
+    bs_width = 1.5  # 长方形的宽（x轴方向）
+    bs_height = 5 # 长方形的长（y轴方向）
+    bs_center = (-1.55, 10)  # 中心点
+
+    # 绘制基站长方形
+    bs_rect = plt.Rectangle(
+        (bs_center[0] - bs_width / 2, bs_center[1] - bs_height / 2),  # 左下角坐标
+        bs_width, bs_height,  # 宽和高
+        edgecolor='black', linewidth=2, label='Base Station'
+    )
+    plt.gca().add_patch(bs_rect)
+
+    # 在右侧长边上绘制 Y 形天线
+    num_antennas = 6  # 天线数量
+    antenna_length = 0.8  # 天线长度
+    antenna_spacing = bs_height / (num_antennas + 1)  # 天线间距
+
+    for i in range(num_antennas):
+        # 天线根部位置（右侧边的中点）
+        ant_base_x = bs_center[0] + bs_width / 2
+        ant_base_y = bs_center[1] - bs_height / 2 + (i + 1) * antenna_spacing
+
+        # Y 形天线的三个分支（斜向上、斜向下、主干）
+        plt.plot(
+            [ant_base_x, ant_base_x + antenna_length*0.5],  # 主干（水平向右）
+            [ant_base_y, ant_base_y],
+            color='black', linewidth=1.5
+        )
+        plt.plot(
+            [ant_base_x + antenna_length * 0.5, ant_base_x + antenna_length],  # 斜向上
+            [ant_base_y, ant_base_y + antenna_length * 0.3],
+            color='black', linewidth=1.2
+        )
+        plt.plot(
+            [ant_base_x + antenna_length * 0.5, ant_base_x + antenna_length],  # 斜向下
+            [ant_base_y, ant_base_y - antenna_length * 0.3],
+            color='black', linewidth=1.2
+        )
+
+    distance = [12, 17, 15, 11]
+    user_labels = ['UE1', 'UE2', 'UE3', 'UE4']
+
+    # Draw the communication user
+    for i, (angle, label) in enumerate(zip(user_angles, user_labels)):
+        plot_angle = np.deg2rad(-angle)
+        patient_x = center[0] + distance[i] * np.cos(plot_angle)
+        patient_y = center[1] + distance[i] * np.sin(plot_angle)
+        plt.scatter(patient_x, patient_y, color='#2ca02c', s=150,
+                    edgecolor='black', linewidth=1, label=f'Communicating User' if i == 0 else "")
+        plt.text(patient_x + 0.5, patient_y + 0.5, label, fontsize=24, fontweight='bold')
+
+    # Draw the sensing target
+    for i, angle in enumerate(target_angles):
+        plot_angle = np.deg2rad(-angle)
+        target_x = center[0] + 11 * np.cos(plot_angle)
+        target_y = center[1] + 11 * np.sin(plot_angle)
+        plt.scatter(target_x, target_y, color='#ff7f0e', s=200, marker='X',
+                    edgecolor='black', linewidth=1.5, label=f'Sensing Target' if i == 0 else "")
+        plt.text(target_x + 0.5, target_y + 0.5, 'Target1', fontsize=24, fontweight='bold')
+
+    # Set the graphics properties
+    plt.xlim(-3, 20)
+    plt.ylim(0, 20)
+    plt.xlabel('Distance (meters)', fontsize=24, fontweight='bold')
+    plt.ylabel('Distance (meters)', fontsize=24, fontweight='bold')
+    # plt.title('DNN-based beamforming',
+    #           fontsize=14, fontweight='bold', pad=20)
+    plt.grid(True, linestyle='--', alpha=0.6)
+
+    # Create a legend in upper right corner
+    handles, labels = plt.gca().get_legend_handles_labels()
+    unique_labels = []
+    unique_handles = []
+    for handle, label in zip(handles, labels):
+        if label not in unique_labels:
+            unique_labels.append(label)
+            unique_handles.append(handle)
+    plt.legend(unique_handles, unique_labels, loc='upper right',
+               framealpha=1, edgecolor='black', fontsize=15)
+
+    plt.tight_layout()
+    plt.savefig('DNN-based beamforming.png', dpi=300, bbox_inches='tight')
+    plt.show()
+
+
 
 # ====================== Main function ======================
 def main():
@@ -88,10 +211,12 @@ def main():
 
     # test_input = torch.tensor([user_angles + target_angles], dtype=torch.float32)
 
-    test_Hc = generate_communication_channel(num_antennas, user_angles, random_seed=SEED)
-    test_Hs = generate_sensing_channel(num_antennas, target_angles, random_seed=SEED)
+    # test_Hc = generate_communication_channel(num_antennas, user_angles, random_seed=SEED)
+    # test_Hs = generate_sensing_channel(num_antennas, target_angles, random_seed=SEED)
+    test_Hc = generate_communication_channel(num_antennas, user_angles)
+    test_Hs = generate_sensing_channel(num_antennas, target_angles)
 
-    # 准备输入数据
+    # Prepare the input data
     Hc_r = torch.FloatTensor(test_Hc.real).unsqueeze(0).to(device)
     Hc_i = torch.FloatTensor(test_Hc.imag).unsqueeze(0).to(device)
     Hs_r = torch.FloatTensor(test_Hs.real).unsqueeze(0).to(device)
@@ -109,9 +234,14 @@ def main():
         zf_weights = traditional_optimizer('ZF', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
         mmse_weights = traditional_optimizer('MMSE', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
 
+    plot_dnn_semicircular_beam_pattern(dl_weights)
+
+    # plot_constellation_dnn(dl_weights, user_angles, snr_db=10)
+
     # ========== Plot Combined Beam Patterns ==========
     plt.figure(figsize=(12, 6))
     ax_combined = plt.gca()
+
 
     # Define methods with their corresponding colors and line styles
     methods = [
@@ -125,6 +255,8 @@ def main():
         (mmse_weights, "MMSE Beamforming", '#FF8C00', (0, (3, 5, 1, 5)))
     ]
     # print(zf_weights.shape)
+
+
 
     # Plot beam patterns for all methods
     for weights, label, color, linestyle in methods:
@@ -176,6 +308,8 @@ def main():
     plt.tight_layout()
     plt.show()
 
+
+
     # Rate comparison
     user_steering_vectors = [
         np.exp(1j * 2 * np.pi * d * np.arange(num_antennas) * np.sin(np.deg2rad(angle)) / wavelength)
@@ -208,7 +342,7 @@ def main():
                 user_rates[method][user_key].append(rate)
                 print(f"[Debug] Stored {user_key} rate: {rate} at SNR {snr_db}dB")
 
-    # 数据验证
+    # Data validation
     for method in methods:
         print(f"\nData verification for {method}:")
         for user in user_rates[method]:
@@ -217,7 +351,7 @@ def main():
             if data_points != len(snr_dBs):
                 print(f"  !!! Data length mismatch for {user}")
 
-    # 绘图修正
+    # Drawing corrections
     plt.figure(figsize=(10, 6))
     colors = ['#FF6B6B', '#4D96FF', '#6BCB77', '#FFD700', '#8A2BE2', '#FF1493', '#00CED1', '#FF8C00']
     markers = ['o', 's', '^', 'D', 'v', 'p', '*', 'X']
@@ -227,9 +361,15 @@ def main():
     plt.xlabel("SNR (dB)", fontsize=20)
     plt.ylabel("Sum Rate (bps/Hz)", fontsize=20)
     plt.xlim(0, 10)
+    plt.xticks(fontsize=20)
+    plt.yticks(fontsize=20)
     plt.grid(alpha=0.3)
     plt.legend()
     plt.show()
+
+    # 在性能分析部分添加能效可视化
+    plot_efficiency_comparison(methods, weights_dict, snr_dBs, colors, markers, user_steering_vectors)
+    plot_power_consumption(methods, weights_dict, colors)
 
     # 每个用户的速率
     # plt.figure(figsize=(15, 10))
@@ -342,8 +482,85 @@ def main():
     plt.xlabel("SNR (dB)", fontsize=20)
     plt.ylabel("CRLB", fontsize=20)
     plt.xlim(0, 10)
+    plt.xticks(fontsize=20)
+    plt.yticks(fontsize=20)
     plt.grid(True, which="both", linestyle='--', alpha=0.5)
     plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_efficiency_comparison(methods, weights_dict, snr_dBs, colors, markers, user_steering_vectors):
+    """绘制能效比较图"""
+    plt.figure(figsize=(10, 6))
+
+    # 计算各方法在不同SNR下的能效
+    ee_results = {method: [] for method in methods}
+
+    for method in methods:
+        weights = weights_dict[method]
+        for snr_db in snr_dBs:
+            # 计算能效 (简化的能效计算)
+            transmit_power = np.sum(np.abs(weights) ** 2) / power_params['power_scaling']
+            total_power = transmit_power / power_params['PA_efficiency'] + power_params['circuit_power']
+
+            # 计算速率
+            rates = calculate_user_rates(weights, user_steering_vectors, snr_db)
+            sum_rate = np.sum(rates)
+
+            # 能效 = 总速率/总功耗 (bps/Hz/W)
+            ee = sum_rate / total_power
+            ee_results[method].append(ee)
+
+    # 绘制能效曲线
+    for idx, method in enumerate(methods):
+        plt.plot(snr_dBs, ee_results[method],
+                 color=colors[idx],
+                 marker=markers[idx],
+                 linewidth=2,
+                 label=method)
+
+    plt.xlabel("SNR (dB)", fontsize=20)
+    plt.ylabel("Energy Efficiency (bps/Hz/W)", fontsize=20)
+    plt.xlim(0, 10)
+    plt.xticks(fontsize=20)
+    plt.yticks(fontsize=20)
+    plt.grid(True, which="both", linestyle='--', alpha=0.5)
+    plt.legend(fontsize=12)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_power_consumption(methods, weights_dict, colors):
+    """绘制功耗比较图"""
+    plt.figure(figsize=(10, 6))
+
+    power_consumption = []
+    labels = []
+
+    for method in methods:
+        weights = weights_dict[method]
+        # 计算发射功率 (W)
+        transmit_power = np.sum(np.abs(weights) ** 2) / power_params['power_scaling']
+        # 计算总功耗
+        total_power = transmit_power / power_params['PA_efficiency'] + power_params['circuit_power']
+
+        power_consumption.append(total_power)
+        labels.append(method)
+
+    # 绘制柱状图
+    bars = plt.bar(labels, power_consumption, color=colors[:len(methods)])
+
+    # 添加数值标签
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width() / 2., height,
+                 f'{height:.2f} W', ha='center', va='bottom')
+
+    plt.ylabel("Total Power Consumption (W)", fontsize=20)
+    plt.xticks(fontsize=12, rotation=45)
+    plt.yticks(fontsize=20)
+    plt.grid(True, axis='y', linestyle='--', alpha=0.5)
     plt.tight_layout()
     plt.show()
 
