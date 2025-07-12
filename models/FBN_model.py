@@ -9,7 +9,7 @@ from config import *
 
 
 class FairBeamformingNet(nn.Module):
-    def __init__(self, input_size, hidden_size=512, max_users=4, num_rf_chains=8):
+    def __init__(self, input_size, hidden_size=512, max_users=4, num_rf_chains=4):
         super().__init__()
         self.max_users = max_users  # Maximum number of users (dynamic number of users needs to ≤ this value)
         self.num_rf_chains = num_rf_chains

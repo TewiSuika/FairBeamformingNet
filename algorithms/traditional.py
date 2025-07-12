@@ -54,7 +54,7 @@ class ZFBeamformer:
 # ====================== MMSE beamforming method ======================
 class MMSEBeamformer:
 
-    def __init__(self, Hc_r, Hc_i, snr_db=10):
+    def __init__(self, Hc_r, Hc_i, snr_db=20):
         """
         Initialize with real and imaginary parts of channel matrix
         Args:

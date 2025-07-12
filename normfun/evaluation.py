@@ -6,16 +6,60 @@ import torch
 from config import *
 from normfun.modulation import qam16_modulate, qam16_demodulate
 import time
+import matplotlib.pyplot as plt
 
 # ====================== Evaluation functions ======================
 def evaluate_beamforming(weights, label=None, ax=None, plot_annotations=True, is_combined=False, color=None,
-                         linestyle='-'):
+                         linestyle='-', verbose=True):
     w_cplx = weights[:num_antennas] + 1j * weights[num_antennas:]
     pattern = []
     for theta in theta_range:
         sv = np.exp(1j * 2 * np.pi * d * np.arange(num_antennas) * np.sin(np.deg2rad(theta)) / wavelength)
         pattern.append(np.abs(w_cplx @ sv.conj()))
     pattern = 20 * np.log10(np.array(pattern) / np.max(pattern) + 1e-8)
+
+    # ====================== 新增分析功能 ======================
+    if verbose:
+        print("\n" + "=" * 40)
+        print("Multi-beam Performance Analysis Report")
+        print("=" * 40)
+
+        # 1. 关键角度增益报告
+        print("\n[1] Key Angle Gains (dB):")
+        print(f"{'Type':<8} | {'Angle(°)':<8} | {'Gain(dB)':<10} | {'Normalized':<12}")
+        print("-" * 45)
+
+        # 目标角度
+        for i, angle in enumerate(target_angles):
+            gain = pattern[np.abs(theta_range - angle).argmin()]
+            print(f"Target{i + 1} | {angle:<8.1f} | {gain:<10.2f} | {10 ** (gain / 20):<12.4f}")
+
+        # 用户角度
+        for i, angle in enumerate(user_angles):
+            gain = pattern[np.abs(theta_range - angle).argmin()]
+            print(f"UE{i + 1}    | {angle:<8.1f} | {gain:<10.2f} | {10 ** (gain / 20):<12.4f}")
+
+        # 2. 波束宽度分析
+        def get_beamwidth(angle, threshold=3):
+            idx = np.abs(theta_range - angle).argmin()
+            hp_level = pattern[idx] - threshold
+            left = np.where(pattern[:idx] < hp_level)[0]
+            right = np.where(pattern[idx:] < hp_level)[0]
+            bw = theta_range[idx + right[0]] - theta_range[left[-1]] if len(left) > 0 and len(right) > 0 else 0
+            return bw
+
+        print("\n[2] Beamwidth Analysis:")
+        for angle in target_angles + user_angles:
+            bw = get_beamwidth(angle)
+            print(f"- {angle}° direction 3dB BW: {bw:.1f}°")
+
+        # 3. 干扰分析
+        print("\n[3] Interference Analysis:")
+        all_nodes = target_angles + user_angles
+        for i, angle in enumerate(all_nodes):
+            other_angles = all_nodes[:i] + all_nodes[i + 1:]
+            interference = max(pattern[np.abs(theta_range - a).argmin()] for a in other_angles)
+            print(f"- {angle}°受到的邻节点最大干扰: {interference:.2f}dB")
 
     if ax is not None:
         # Plot the beam pattern
@@ -170,6 +214,73 @@ def calculate_ber(w, user_steering_vectors, snr_db, num_symbols=10000):
 
     return np.mean(bers)
 
+# def calculate_ber(w, user_steering_vectors, snr_db, num_symbols=10000):
+#     """计算误码率并绘制星象图"""
+#     # 更新样式设置 - 使用新版样式名称
+#     plt.style.use('seaborn-v0_8')  # 替代原来的'seaborn'
+#     plt.rcParams['font.sans-serif'] = ['Arial']
+#     snr_db=30
+#
+#     # 复数权重处理
+#     w_cplx = w[:num_antennas] + 1j * w[num_antennas:]
+#     w_cplx /= np.linalg.norm(w_cplx)
+#
+#     # 创建图形
+#     fig = plt.figure(figsize=(12, 8), dpi=100)
+#     plt.suptitle(f"QAM16 Constellation and BER Evaluation (SNR={snr_db}dB)", y=1.02)
+#
+#     bers = []
+#     snr_linear = 10 ** (snr_db / 10)
+#
+#     for i, h_k in enumerate(user_steering_vectors):
+#         # 计算有效增益
+#         effective_gain = np.abs(np.dot(w_cplx.conj(), h_k))
+#
+#         # 生成测试数据
+#         bits = np.random.randint(0, 2, 4 * num_symbols)
+#         tx_symbols = qam16_modulate(bits)
+#
+#         # 模拟接收信号
+#         rx_symbols = effective_gain * tx_symbols
+#         noise = np.sqrt(0.5 / snr_linear) * (np.random.randn(len(rx_symbols)) + 1j * np.random.randn(len(rx_symbols)))
+#         rx_symbols += noise
+#
+#         # 计算BER
+#         rx_bits = qam16_demodulate(rx_symbols / effective_gain)
+#         ber = np.mean(np.abs(np.array(rx_bits) - bits))
+#         bers.append(ber)
+#
+#         # --- 绘制星象图 ---
+#         ax = plt.subplot(2, 2, i + 1)
+#
+#         # 绘制接收信号（采样前500个点避免过密）
+#         sample_idx = np.random.choice(len(rx_symbols), size=min(500, len(rx_symbols)), replace=False)
+#         ax.scatter(np.real(rx_symbols[sample_idx]), np.imag(rx_symbols[sample_idx]),
+#                    s=8, alpha=0.6, color='blue',
+#                    edgecolor='white', linewidth=0.2)
+#
+#         # # 绘制理想QAM16星座点
+#         # ideal_symbols = qam16_modulate_all_possible()
+#         # ax.scatter(np.real(ideal_symbols), np.imag(ideal_symbols),
+#         #            s=40, color='red', marker='o',
+#         #            edgecolor='black', linewidth=0.5,
+#         #            label='Ideal')
+#
+#         # 图形标注
+#         ax.set_xlim(-1.8, 1.8)
+#         ax.set_ylim(-1.8, 1.8)
+#         ax.grid(alpha=0.3)
+#         ax.set_xlabel("In-phase")
+#         ax.set_ylabel("Quadrature")
+#         ax.set_title(f"User {i + 1} (BER={ber:.2e})", pad=10)
+#         ax.legend()
+#
+#     plt.tight_layout()
+#     plt.savefig(f'QAM16_Constellation_SNR{snr_db}dB.png', dpi=300, bbox_inches='tight')
+#     plt.show()
+#
+#     return np.mean(bers)
+
 # ================== Timing function ==================
 def time_method(method_func, *args, num_runs=10, **kwargs):
     """Run the method and return the average time (seconds)"""
@@ -179,4 +290,28 @@ def time_method(method_func, *args, num_runs=10, **kwargs):
         method_func(*args, **kwargs)
         times.append(time.time() - start)
     return np.mean(times)
+
+
+def calculate_efficiency(self, weights, Hc_r, Hc_i):
+    """
+    计算能效(EE): 总速率/总功耗
+    """
+    # 转换为复数权重
+    weights = weights[:, :self.num_antennas] + 1j * weights[:, self.num_antennas:]
+
+    # 计算发射功率 (W)
+    transmit_power = torch.sum(torch.abs(weights) ** 2, dim=1) / power_params['power_scaling']
+
+    # 计算总功耗
+    total_power = transmit_power / power_params['PA_efficiency'] + power_params['circuit_power']
+
+    # 计算信道容量 (bps/Hz)
+    Hc = Hc_r + 1j * Hc_i
+    user_rates = torch.log2(1 + torch.abs(Hc @ weights.unsqueeze(-1)) ** 2)
+    sum_rate = torch.sum(user_rates)
+
+    # 能效 = 总速率/总功耗 (bps/Hz/W)
+    ee = sum_rate / total_power
+
+    return ee
 
