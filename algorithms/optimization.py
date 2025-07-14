@@ -9,9 +9,53 @@ from config import *
 from algorithms.traditional import ZFBeamformer, MMSEBeamformer
 
 
+# # ====================== Objective function ======================
+# def hybrid_objective(w, Hc, Hs, rho_set, num_antennas, num_rf_chains):
+#     """Objective function for hybrid beamforming with communication-sensing weights"""
+#     # Split variables into analog and digital parts
+#     analog_real = w[:num_antennas * num_rf_chains]
+#     analog_imag = w[num_antennas * num_rf_chains:2 * num_antennas * num_rf_chains]
+#     digital_real = w[2 * num_antennas * num_rf_chains:2 * num_antennas * num_rf_chains + num_rf_chains]
+#     digital_imag = w[2 * num_antennas * num_rf_chains + num_rf_chains:]
+#
+#     # Construct analog beamforming matrix (Nt x Nrf)
+#     F_RF = (analog_real + 1j * analog_imag).reshape(num_antennas, num_rf_chains)
+#     # Construct digital beamforming vector (Nrf x 1)
+#     F_BB = (digital_real + 1j * digital_imag).reshape(num_rf_chains, 1)
+#
+#     # Normalize analog beamforming (constant modulus constraint)
+#     F_RF = F_RF / np.abs(F_RF)
+#     # Normalize digital beamforming (power constraint)
+#     F_BB = F_BB / np.linalg.norm(F_RF @ F_BB, 'fro')
+#
+#     # Combined beamforming vector (16x1)
+#     w_cplx = (F_RF @ F_BB).flatten()
+#
+#     # Communication Performance Calculation (using Hc)
+#     user_gains = np.abs(w_cplx @ Hc)
+#     min_user_gain = np.min(user_gains)
+#     sum_user_gain = np.sum(user_gains)
+#
+#     # Sensing Performance Computing (using Hs)
+#     target_gains = np.abs(w_cplx @ Hs)
+#     avg_target_gain = np.mean(target_gains)
+#
+#     # Combine multiple targets
+#     comm_perf = min_user_gain + 1.5 * sum_user_gain
+#     sens_perf = avg_target_gain
+#     # return -(rho_set * 2.5 * comm_perf + (1 - rho_set) * sens_perf)
+#     return -(rho_set * comm_perf + 2.5*(1 - rho_set) * sens_perf)
+
+
 # ====================== Objective function ======================
-def hybrid_objective(w, Hc, Hs, rho_set, num_antennas, num_rf_chains):
-    """Objective function for hybrid beamforming with communication-sensing weights"""
+def hybrid_objective(w, Hc, target_angles_set, rho_set, num_antennas, num_rf_chains):
+    # print(w.shape)
+    # print(Hc.shape)
+    # 确保target_angles是可迭代对象(将单个角度转换为数组)
+    if isinstance(target_angles_set, (float, np.float64)):
+        target_angles_set = np.array([target_angles_set])
+
+    """Objective function using direct angle-based sensing calculation"""
     # Split variables into analog and digital parts
     analog_real = w[:num_antennas * num_rf_chains]
     analog_imag = w[num_antennas * num_rf_chains:2 * num_antennas * num_rf_chains]
@@ -28,25 +72,51 @@ def hybrid_objective(w, Hc, Hs, rho_set, num_antennas, num_rf_chains):
     # Normalize digital beamforming (power constraint)
     F_BB = F_BB / np.linalg.norm(F_RF @ F_BB, 'fro')
 
-    # Combined beamforming vector (16x1)
+    # Combined beamforming vector (Nt x 1)
     w_cplx = (F_RF @ F_BB).flatten()
 
+
     # Communication Performance Calculation (using Hc)
-    user_gains = np.abs(w_cplx @ Hc)
+    user_gains = np.abs(w_cplx @ Hc)  # Hc shape: [num_antennas, num_users]
     min_user_gain = np.min(user_gains)
     sum_user_gain = np.sum(user_gains)
 
-    # Sensing Performance Computing (using Hs)
-    target_gains = np.abs(w_cplx @ Hs)
+    # Sensing Performance Calculation (using target angles)
+    theta_rad = np.deg2rad(target_angles_set)
+    n = np.arange(num_antennas)
+    d = 0.5  # antenna spacing (wavelength)
+    # print((w_cplx.conj()).shape)
+
+    # Calculate steering vectors for all targets
+    target_gains = []
+    for theta in theta_rad:
+        a_t = np.exp(1j * 2 * np.pi * d * n * np.sin(theta))
+        gain = np.abs(np.dot(w_cplx.conj(), a_t))
+        target_gains.append(gain)
+
     avg_target_gain = np.mean(target_gains)
 
-    # Combine multiple targets
+    # Combined objective
     comm_perf = min_user_gain + 1.5 * sum_user_gain
     sens_perf = avg_target_gain
-    # return -(rho_set * 2.5 * comm_perf + (1 - rho_set) * sens_perf)
-    return -(rho_set * comm_perf + 2.5*(1 - rho_set) * sens_perf)
+    return -(rho_set * comm_perf + 0.5*(1 - rho_set) * sens_perf)
 
 
+def _convert_hybrid_to_final(w_hybrid, num_antennas, num_rf_chains):
+    """Convert 272-dim hybrid weights to 32-dim final beamforming vector"""
+    # Extract analog and digital parts
+    analog_real = w_hybrid[:num_antennas * num_rf_chains]
+    analog_imag = w_hybrid[num_antennas * num_rf_chains:2 * num_antennas * num_rf_chains]
+    digital_real = w_hybrid[2 * num_antennas * num_rf_chains:2 * num_antennas * num_rf_chains + num_rf_chains]
+    digital_imag = w_hybrid[2 * num_antennas * num_rf_chains + num_rf_chains:]
+
+    # Construct beamforming matrices
+    F_RF = (analog_real + 1j * analog_imag).reshape(num_antennas, num_rf_chains)
+    F_BB = (digital_real + 1j * digital_imag).reshape(num_rf_chains, 1)
+
+    # Get final beamforming vector and convert to real/imag parts
+    w_cplx = (F_RF @ F_BB).flatten()
+    return np.concatenate([w_cplx.real, w_cplx.imag])  # (32,)
 
 # ====================== Optimization Algorithms (Modified) ======================
 def differential_evolution_optimizer(objective, bounds, args):
@@ -74,24 +144,7 @@ def whale_optimization_algorithm(objective, bounds, args, num_whales=30, max_ite
     return _convert_hybrid_to_final(best_whale, args[3], args[4])  # num_antennas, num_rf_chains
 
 
-def _convert_hybrid_to_final(w_hybrid, num_antennas, num_rf_chains):
-    """Convert 272-dim hybrid weights to 32-dim final beamforming vector"""
-    # Extract analog and digital parts
-    analog_real = w_hybrid[:num_antennas * num_rf_chains]
-    analog_imag = w_hybrid[num_antennas * num_rf_chains:2 * num_antennas * num_rf_chains]
-    digital_real = w_hybrid[2 * num_antennas * num_rf_chains:2 * num_antennas * num_rf_chains + num_rf_chains]
-    digital_imag = w_hybrid[2 * num_antennas * num_rf_chains + num_rf_chains:]
-
-    # Construct beamforming matrices
-    F_RF = (analog_real + 1j * analog_imag).reshape(num_antennas, num_rf_chains)
-    F_BB = (digital_real + 1j * digital_imag).reshape(num_rf_chains, 1)
-
-    # Get final beamforming vector and convert to real/imag parts
-    w_cplx = (F_RF @ F_BB).flatten()
-    return np.concatenate([w_cplx.real, w_cplx.imag])  # (32,)
-
-
-# ====================== Original GWO/WOA implementations ======================
+# ====================== GWO/WOA implementations ======================
 def grey_wolf_optimizer_original(objective, bounds, args, num_wolves=30, max_iter=100):
     dim = len(bounds)
     wolves = np.array([[np.random.uniform(b[0], b[1]) for b in bounds] for _ in range(num_wolves)])
@@ -167,20 +220,30 @@ def whale_optimization_algorithm_original(objective, bounds, args, num_whales=30
 
 
 # ====================== Unified Optimizer Interface ======================
-def traditional_optimizer(method, Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor, num_rf_chains=8):
+# def traditional_optimizer(method, Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor, num_rf_chains=8):
+def traditional_optimizer(method, Hc_r, Hc_i, target_angles_tensor, rho_tensor, num_rf_chains=8):
     """Unified optimizer interface for hybrid beamforming with the same inputs as DL model"""
     # Convert tensors to numpy arrays
     Hc = Hc_r.numpy() + 1j * Hc_i.numpy()
-    Hs = Hs_r.numpy() + 1j * Hs_i.numpy()
+    # Hs = Hs_r.numpy() + 1j * Hs_i.numpy()
+    target_angles_set = target_angles_tensor.item()
     rho_set = rho_tensor.item()
 
+    # Make sure the target_angles is a numpy array
+    if isinstance(target_angles_set, torch.Tensor):
+        target_angles_set = target_angles_set.numpy()
+    elif isinstance(target_angles_set, (float, int)):
+        target_angles_set = np.array([target_angles_set])
+
     # Flatten Hc and Hs to (num_antennas, num_users/targets)
-    Hc = Hc.squeeze(0).T  # Remove batch dim and transpose
-    Hs = Hs.squeeze(0).T  # Remove batch dim and transpose
+    # Hc = Hc.squeeze(0).T  # Remove batch dim and transpose
+    Hc = Hc[0].T
+    # Hs = Hs.squeeze(0).T  # Remove batch dim and transpose
     num_antennas = Hc.shape[0]  # Get actual number of antennas from input
 
     # Prepare arguments for objective function
-    args = (Hc, Hs, rho_set, num_antennas, num_rf_chains)
+    # args = (Hc, Hs, rho_set, num_antennas, num_rf_chains)
+    args = (Hc, target_angles_set, rho_set, num_antennas, num_rf_chains)
 
     # Define bounds for optimization variables
     bounds = [(-1, 1)] * (2 * num_antennas * num_rf_chains + 2 * num_rf_chains)
@@ -198,10 +261,10 @@ def traditional_optimizer(method, Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor, num_rf_cha
     elif method == 'ZF':
         # For ZF, we still need angles - assuming they're in config
         zf_bf = ZFBeamformer(Hc.real, Hc.imag)
-        return zf_bf.get_weights_for_jcas(Hs.real, Hs.imag, rho=rho_set)
+        return zf_bf.get_weights_for_jcas(Hc.real, Hc.imag, rho=rho_set)
     elif method == 'MMSE':
         # For MMSE, we still need angles - assuming they're in config
         mmse_bf = MMSEBeamformer(Hc.real, Hc.imag)
-        return mmse_bf.get_weights(Hs.real, Hs.imag, rho=rho_set)
+        return mmse_bf.get_weights(Hc.real, Hc.imag, rho=rho_set)
     else:
         raise ValueError(f"Unknown method: {method}")

@@ -18,28 +18,28 @@ def evaluate_beamforming(weights, label=None, ax=None, plot_annotations=True, is
         pattern.append(np.abs(w_cplx @ sv.conj()))
     pattern = 20 * np.log10(np.array(pattern) / np.max(pattern) + 1e-8)
 
-    # ====================== 新增分析功能 ======================
+    # ====================== Added analysis features ======================
     if verbose:
         print("\n" + "=" * 40)
         print("Multi-beam Performance Analysis Report")
         print("=" * 40)
 
-        # 1. 关键角度增益报告
+        # 1. Key Angle Gain Report
         print("\n[1] Key Angle Gains (dB):")
         print(f"{'Type':<8} | {'Angle(°)':<8} | {'Gain(dB)':<10} | {'Normalized':<12}")
         print("-" * 45)
 
-        # 目标角度
+        # Target angle
         for i, angle in enumerate(target_angles):
             gain = pattern[np.abs(theta_range - angle).argmin()]
             print(f"Target{i + 1} | {angle:<8.1f} | {gain:<10.2f} | {10 ** (gain / 20):<12.4f}")
 
-        # 用户角度
+        # User perspective
         for i, angle in enumerate(user_angles):
             gain = pattern[np.abs(theta_range - angle).argmin()]
             print(f"UE{i + 1}    | {angle:<8.1f} | {gain:<10.2f} | {10 ** (gain / 20):<12.4f}")
 
-        # 2. 波束宽度分析
+        # 2. Beamwidth analysis
         def get_beamwidth(angle, threshold=3):
             idx = np.abs(theta_range - angle).argmin()
             hp_level = pattern[idx] - threshold
@@ -53,13 +53,13 @@ def evaluate_beamforming(weights, label=None, ax=None, plot_annotations=True, is
             bw = get_beamwidth(angle)
             print(f"- {angle}° direction 3dB BW: {bw:.1f}°")
 
-        # 3. 干扰分析
+        # 3. Interference analysis
         print("\n[3] Interference Analysis:")
         all_nodes = target_angles + user_angles
         for i, angle in enumerate(all_nodes):
             other_angles = all_nodes[:i] + all_nodes[i + 1:]
             interference = max(pattern[np.abs(theta_range - a).argmin()] for a in other_angles)
-            print(f"- {angle}°受到的邻节点最大干扰: {interference:.2f}dB")
+            print(f"- {angle}°The maximum interference from neighboring nodes: {interference:.2f}dB")
 
     if ax is not None:
         # Plot the beam pattern
@@ -88,7 +88,7 @@ def evaluate_beamforming(weights, label=None, ax=None, plot_annotations=True, is
             ax.grid(alpha=0.3)
     return pattern
 
-# ====================== 改进的速率计算函数 ======================
+# ====================== Rate calculation function ======================
 def calculate_user_rates(w, user_steering_vectors, snr_db, num_symbols=10000):
     # real_part = w[:num_antennas]
     # imag_part = w[num_antennas:]
@@ -292,26 +292,26 @@ def time_method(method_func, *args, num_runs=10, **kwargs):
     return np.mean(times)
 
 
-def calculate_efficiency(self, weights, Hc_r, Hc_i):
-    """
-    计算能效(EE): 总速率/总功耗
-    """
-    # 转换为复数权重
-    weights = weights[:, :self.num_antennas] + 1j * weights[:, self.num_antennas:]
-
-    # 计算发射功率 (W)
-    transmit_power = torch.sum(torch.abs(weights) ** 2, dim=1) / power_params['power_scaling']
-
-    # 计算总功耗
-    total_power = transmit_power / power_params['PA_efficiency'] + power_params['circuit_power']
-
-    # 计算信道容量 (bps/Hz)
-    Hc = Hc_r + 1j * Hc_i
-    user_rates = torch.log2(1 + torch.abs(Hc @ weights.unsqueeze(-1)) ** 2)
-    sum_rate = torch.sum(user_rates)
-
-    # 能效 = 总速率/总功耗 (bps/Hz/W)
-    ee = sum_rate / total_power
-
-    return ee
+# def calculate_efficiency(self, weights, Hc_r, Hc_i):
+#     """
+#     计算能效(EE): 总速率/总功耗
+#     """
+#     # 转换为复数权重
+#     weights = weights[:, :self.num_antennas] + 1j * weights[:, self.num_antennas:]
+#
+#     # 计算发射功率 (W)
+#     transmit_power = torch.sum(torch.abs(weights) ** 2, dim=1) / power_params['power_scaling']
+#
+#     # 计算总功耗
+#     total_power = transmit_power / power_params['PA_efficiency'] + power_params['circuit_power']
+#
+#     # 计算信道容量 (bps/Hz)
+#     Hc = Hc_r + 1j * Hc_i
+#     user_rates = torch.log2(1 + torch.abs(Hc @ weights.unsqueeze(-1)) ** 2)
+#     sum_rate = torch.sum(user_rates)
+#
+#     # 能效 = 总速率/总功耗 (bps/Hz/W)
+#     ee = sum_rate / total_power
+#
+#     return ee
 

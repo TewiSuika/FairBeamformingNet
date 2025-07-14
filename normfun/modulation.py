@@ -4,7 +4,7 @@ Modem module
 import numpy as np
 
 def qam16_modulate(bits):
-    """将4个bit映射为16QAM符号"""
+    """Map 4 bits to 16QAM symbols"""
     assert len(bits) % 4 == 0
     symbols = []
     for i in range(0, len(bits), 4):

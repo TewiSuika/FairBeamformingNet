@@ -78,7 +78,7 @@ class MMSEBeamformer:
         snr_linear = 10 ** (self.snr_db / 10)
         noise_power = 1.0 / snr_linear
 
-        H = self.H.T  # 将H转为(4,16)形状
+        H = self.H.T
         # print(H.shape)
         I = np.eye(num_antennas)
         mmse_weights = np.linalg.inv(H.conj().T @ H + noise_power * I) @ H.conj().T
