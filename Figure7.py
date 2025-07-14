@@ -4,6 +4,7 @@ import torch
 import os
 from itertools import cycle
 from tqdm import tqdm
+
 import matplotlib
 import torch.nn as nn
 from models.channel_data_generate import generate_sensing_channel,generate_communication_channel
@@ -15,6 +16,8 @@ from models.channel_data_generate import generate_sensing_channel,generate_commu
 # Configure system parameters
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 num_antennas = 16
+num_receiver_antennas = 16
+
 wavelength = 1
 d = wavelength / 2
 theta_range = np.linspace(-90, 90, 361)
@@ -25,17 +28,24 @@ snr_db = 20
 # Model loading function
 def load_model(user_angles, target_angles, num_antennas, rho):
     class FairBeamformingNet(nn.Module):
-        def __init__(self, input_size, hidden_size=512, max_users=4, num_rf_chains=8):
+        def __init__(self, input_size, hidden_size=512, max_users=len(user_angles), num_rf_chains=8):
             super().__init__()
-            self.max_users = max_users  # Maximum number of users (dynamic number of users needs to ≤ this value)
+            self.max_users = max_users
             self.num_rf_chains = num_rf_chains
             self.num_antennas = 16
 
             assert max_users <= num_rf_chains, "max_users cannot exceed num_rf_chains"
 
+            # Enter the feature dimension calculation:
+            # Hc_real + Hc_imag = 2 * (max_users * num_antennas)
+            # rho = 1
+            # target_angles = num_targets
+            # input_size = 2 * max_users * num_antennas + 1 + num_targets
+            self.input_size = input_size
+
             # Shared network
             self.shared_net = nn.Sequential(
-                nn.Linear(input_size, hidden_size),
+                nn.Linear(self.input_size, hidden_size),
                 nn.ReLU(),
                 nn.Linear(hidden_size, hidden_size),
                 nn.ReLU()
@@ -50,7 +60,7 @@ def load_model(user_angles, target_angles, num_antennas, rho):
                 ) for _ in range(max_users)
             ])
 
-            # Analog beamformer (num_rf_chains * num_antennas * 2)
+            # Analog beamformer
             self.analog_beamformer = nn.Sequential(
                 nn.Linear(hidden_size, hidden_size),
                 nn.ReLU(),
@@ -59,15 +69,19 @@ def load_model(user_angles, target_angles, num_antennas, rho):
 
             self.norm = nn.LayerNorm(num_antennas * 2)
 
-        def forward(self, Hc_real, Hc_imag, Hs_real, Hs_imag, rho, num_users=None):
-
+        def forward(self, Hc_real, Hc_imag, target_angles, rho, num_users=None):
             if num_users is None:
                 num_users = self.max_users
+            else:
+                if torch.is_tensor(num_users):
+                    num_users = num_users.item()
+
             assert num_users <= self.max_users, f"num_users ({num_users}) > max_users ({self.max_users})"
 
+
             Hc = torch.cat([Hc_real.flatten(1), Hc_imag.flatten(1)], dim=1)
-            Hs = torch.cat([Hs_real.flatten(1), Hs_imag.flatten(1)], dim=1)
-            x = torch.cat([Hc, Hs, rho.view(-1, 1)], dim=1)
+
+            x = torch.cat([Hc, target_angles.view(-1, 1), rho.view(-1, 1)], dim=1)
             x = self.shared_net(x)
 
             digital_outputs = [self.digital_branches[i](x).view(-1, 1, 2)
@@ -80,10 +94,8 @@ def load_model(user_angles, target_angles, num_antennas, rho):
                                       2, device=x.device)
                 digital_combined = torch.cat([digital_combined, padding], dim=1)
 
-            # Analog: [B, num_rf_chains, num_antennas, 2]
             analog_output = self.analog_beamformer(x).view(-1, self.num_rf_chains, self.num_antennas, 2)
 
-            # Hybrid: [B, num_antennas, 2]
             hybrid_output = torch.einsum('brf,brnf->bnf', digital_combined, analog_output)
             hybrid_output = hybrid_output.flatten(1)  # [B, 32]
 
@@ -91,7 +103,8 @@ def load_model(user_angles, target_angles, num_antennas, rho):
 
     num_users = len(user_angles)
     num_targets = len(target_angles)
-    input_size = 2 * (num_users * num_antennas + num_targets * num_antennas) + 1
+    # input_size = 2 * (num_users * num_antennas + num_targets * num_antennas) + 1
+    input_size = 2 * num_users * num_antennas + num_targets + 1
     model = FairBeamformingNet(input_size, hidden_size=512, max_users=num_users).to(device)
     model_name = f"model_U{len(user_angles)}_S{len(target_angles)}_A{num_antennas}_rho{rho:.2f}.pth".replace(".",
                                                                                                                  "_")
@@ -105,7 +118,6 @@ def load_model(user_angles, target_angles, num_antennas, rho):
     return model
 
 
-# 速率计算函数
 def calculate_rates(weights, user_angles, snr_db):
     """Calculate both sum rate and average rate"""
     w_cplx = weights[:num_antennas] + 1j * weights[num_antennas:]
@@ -126,7 +138,7 @@ def calculate_rates(weights, user_angles, snr_db):
 def plot_rates_vs_users():
     user_configs = {
         3: [-10, 20, 50],
-        4: [-15, 15, 30, 45],
+        4: [-20, 10, 25, 60],
         5: [-10, 0, 10, 20, 30],
         6: [-10, 0, 10, 20, 30, 40],
         7: [-10, 0, 10, 20, 30, 40, 50],
@@ -160,14 +172,16 @@ def plot_rates_vs_users():
                     test_Hc = generate_communication_channel(num_antennas, user_angles)
                     test_Hs = generate_sensing_channel(num_antennas, target_angles)
 
-                    # 准备输入数据
+                    # Prepare the input data
                     Hc_r = torch.FloatTensor(test_Hc.real).unsqueeze(0).to(device)
                     Hc_i = torch.FloatTensor(test_Hc.imag).unsqueeze(0).to(device)
                     Hs_r = torch.FloatTensor(test_Hs.real).unsqueeze(0).to(device)
                     Hs_i = torch.FloatTensor(test_Hs.imag).unsqueeze(0).to(device)
+                    target_angles_tensor = torch.FloatTensor(target_angles).to(device)
                     rho_tensor = torch.FloatTensor([rho]).to(device)
 
-                    weights = model(Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor).numpy()[0]
+                    # weights = model(Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor).numpy()[0]
+                    weights = model(Hc_r, Hc_i, target_angles_tensor, rho_tensor).numpy()[0]
 
                 sum_rate, avg_rate = calculate_rates(weights, user_angles, snr_db)
                 sum_rates.append(sum_rate)

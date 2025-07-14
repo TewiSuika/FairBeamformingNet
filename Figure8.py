@@ -18,22 +18,31 @@ snr_db = 10
 wavelength = 1
 d = wavelength / 2
 rho_values = np.arange(0, 1.05, 0.05)
+num_rf_chains=8
+
 print(rho_values)
 CRLB_SCALE_FACTOR = 100
 SEED = 26
 
 class FairBeamformingNet(nn.Module):
-    def __init__(self, input_size, hidden_size=512, max_users=4, num_rf_chains=4):
+    def __init__(self, input_size, hidden_size=512, max_users=num_users, num_rf_chains=8):
         super().__init__()
-        self.max_users = max_users  # Maximum number of users (dynamic number of users needs to ≤ this value)
+        self.max_users = max_users
         self.num_rf_chains = num_rf_chains
         self.num_antennas = 16
 
         assert max_users <= num_rf_chains, "max_users cannot exceed num_rf_chains"
 
+        # Enter the feature dimension calculation:
+        # Hc_real + Hc_imag = 2 * (max_users * num_antennas)
+        # rho = 1
+        # target_angles = num_targets
+        # input_size = 2 * max_users * num_antennas + 1 + num_targets
+        self.input_size = input_size
+
         # Shared network
         self.shared_net = nn.Sequential(
-            nn.Linear(input_size, hidden_size),
+            nn.Linear(self.input_size, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU()
@@ -48,7 +57,7 @@ class FairBeamformingNet(nn.Module):
             ) for _ in range(max_users)
         ])
 
-        # Analog beamformer (num_rf_chains * num_antennas * 2)
+        # Analog beamformer
         self.analog_beamformer = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
@@ -57,31 +66,32 @@ class FairBeamformingNet(nn.Module):
 
         self.norm = nn.LayerNorm(num_antennas * 2)
 
-    def forward(self, Hc_real, Hc_imag, Hs_real, Hs_imag, rho, num_users=None):
-
+    def forward(self, Hc_real, Hc_imag, target_angles, rho,  num_users=None):
         if num_users is None:
             num_users = self.max_users
+        else:
+            if torch.is_tensor(num_users):
+                num_users = num_users.item()
+
         assert num_users <= self.max_users, f"num_users ({num_users}) > max_users ({self.max_users})"
 
         Hc = torch.cat([Hc_real.flatten(1), Hc_imag.flatten(1)], dim=1)
-        Hs = torch.cat([Hs_real.flatten(1), Hs_imag.flatten(1)], dim=1)
-        x = torch.cat([Hc, Hs, rho.view(-1, 1)], dim=1)
+
+        x = torch.cat([Hc, target_angles.view(-1, 1), rho.view(-1, 1) ], dim=1)
         x = self.shared_net(x)
 
         digital_outputs = [self.digital_branches[i](x).view(-1, 1, 2)
-                          for i in range(num_users)]
+                           for i in range(num_users)]
         digital_combined = torch.cat(digital_outputs, dim=1)
 
         if num_users < self.num_rf_chains:
             padding = torch.zeros(x.size(0),
-                                 self.num_rf_chains - num_users,
-                                 2, device=x.device)
+                                  self.num_rf_chains - num_users,
+                                  2, device=x.device)
             digital_combined = torch.cat([digital_combined, padding], dim=1)
 
-        # Analog: [B, num_rf_chains, num_antennas, 2]
         analog_output = self.analog_beamformer(x).view(-1, self.num_rf_chains, self.num_antennas, 2)
 
-        # Hybrid: [B, num_antennas, 2]
         hybrid_output = torch.einsum('brf,brnf->bnf', digital_combined, analog_output)
         hybrid_output = hybrid_output.flatten(1)  # [B, 32]
 
@@ -95,7 +105,8 @@ def load_model(rho):
     ).replace(".", "_")
     # model = FairBeamformingNet(input_size=num_users + len(target_angles))
 
-    input_size = 2 * (num_users * num_antennas + num_targets * num_antennas) + 1
+    # input_size = 2 * (num_users * num_antennas + num_targets * num_antennas) + 1
+    input_size = 2 * num_users * num_antennas + num_targets + 1
     model = FairBeamformingNet(input_size, hidden_size=512, max_users=num_users).to(device)
     if os.path.exists(model_name):
         model.load_state_dict(torch.load(model_name, map_location=device, weights_only=True))
@@ -190,7 +201,7 @@ def main():
         print(f"\nProcessing ρ={rho:.2f}")
 
         test_Hc = generate_communication_channel(num_antennas, user_angles, random_seed=SEED)
-        test_Hs = generate_sensing_channel(num_antennas, target_angles, random_seed=SEED)
+        # test_Hs = generate_sensing_channel(num_antennas, target_angles, random_seed=SEED)
         # test_Hc = generate_communication_channel(num_antennas, user_angles)
         # test_Hs = generate_sensing_channel(num_antennas, target_angles)
         # print(test_Hc)
@@ -198,17 +209,19 @@ def main():
         # 准备输入数据
         Hc_r = torch.FloatTensor(test_Hc.real).unsqueeze(0).to(device)
         Hc_i = torch.FloatTensor(test_Hc.imag).unsqueeze(0).to(device)
-        Hs_r = torch.FloatTensor(test_Hs.real).unsqueeze(0).to(device)
-        Hs_i = torch.FloatTensor(test_Hs.imag).unsqueeze(0).to(device)
+        # Hs_r = torch.FloatTensor(test_Hs.real).unsqueeze(0).to(device)
+        # Hs_i = torch.FloatTensor(test_Hs.imag).unsqueeze(0).to(device)
+        target_angles_tensor = torch.FloatTensor(target_angles).to(device)
         rho_tensor = torch.FloatTensor([rho]).to(device)
 
-        # DNN方法
+        # DNN
         try:
             model = load_model(rho)
 
             with torch.no_grad():
                 # weights = model(input_data).squeeze()
-                weights = model(Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor).squeeze()
+                # weights = model(Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor).squeeze()
+                weights = model(Hc_r, Hc_i, target_angles_tensor, rho_tensor).squeeze()
 
             # Calculate CRLB
             precoder = weights[:num_antennas] + 1j * weights[num_antennas:]
@@ -227,7 +240,7 @@ def main():
         for method in methods[1:]:
             try:
 
-                weights = traditional_optimizer(method, Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)  # 不再需要.squeeze()
+                weights = traditional_optimizer(method, Hc_r, Hc_i,target_angles_tensor, rho_tensor)  # 不再需要.squeeze()
                 # 在计算前转换为 PyTorch 张量
                 weights = torch.from_numpy(weights)  # 转换为 PyTorch 张量
                 weights = weights.to(torch.complex64)

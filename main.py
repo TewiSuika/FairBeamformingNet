@@ -103,42 +103,42 @@ def plot_dnn_semicircular_beam_pattern(weights):
     plt.plot(x, y, color='#1f77b4', linewidth=3, label='Beampattern')
     plt.fill_betweenx(y, center[0], x, color='#1f77b4', alpha=0.15)
 
-    # 绘制基站（长方形，宽//x轴，长//y轴）
-    bs_width = 1.5  # 长方形的宽（x轴方向）
-    bs_height = 5 # 长方形的长（y轴方向）
-    bs_center = (-1.55, 10)  # 中心点
+    # Draw Base Station (Rectangle, Width//x-axis, Length//Y-axis)
+    bs_width = 1.5
+    bs_height = 5
+    bs_center = (-1.55, 10)
 
-    # 绘制基站长方形
+
     bs_rect = plt.Rectangle(
-        (bs_center[0] - bs_width / 2, bs_center[1] - bs_height / 2),  # 左下角坐标
-        bs_width, bs_height,  # 宽和高
+        (bs_center[0] - bs_width / 2, bs_center[1] - bs_height / 2),
+        bs_width, bs_height,
         edgecolor='black', linewidth=2, label='Base Station'
     )
     plt.gca().add_patch(bs_rect)
 
-    # 在右侧长边上绘制 Y 形天线
-    num_antennas = 6  # 天线数量
-    antenna_length = 0.8  # 天线长度
-    antenna_spacing = bs_height / (num_antennas + 1)  # 天线间距
+
+    num_antennas = 6
+    antenna_length = 0.8
+    antenna_spacing = bs_height / (num_antennas + 1)
 
     for i in range(num_antennas):
-        # 天线根部位置（右侧边的中点）
+
         ant_base_x = bs_center[0] + bs_width / 2
         ant_base_y = bs_center[1] - bs_height / 2 + (i + 1) * antenna_spacing
 
-        # Y 形天线的三个分支（斜向上、斜向下、主干）
+
         plt.plot(
-            [ant_base_x, ant_base_x + antenna_length*0.5],  # 主干（水平向右）
+            [ant_base_x, ant_base_x + antenna_length*0.5],
             [ant_base_y, ant_base_y],
             color='black', linewidth=1.5
         )
         plt.plot(
-            [ant_base_x + antenna_length * 0.5, ant_base_x + antenna_length],  # 斜向上
+            [ant_base_x + antenna_length * 0.5, ant_base_x + antenna_length],
             [ant_base_y, ant_base_y + antenna_length * 0.3],
             color='black', linewidth=1.2
         )
         plt.plot(
-            [ant_base_x + antenna_length * 0.5, ant_base_x + antenna_length],  # 斜向下
+            [ant_base_x + antenna_length * 0.5, ant_base_x + antenna_length],
             [ant_base_y, ant_base_y - antenna_length * 0.3],
             color='black', linewidth=1.2
         )
@@ -197,42 +197,50 @@ def main():
 
     if model_name:
         # Load an existing model
-        model = FairBeamformingNet(input_size, hidden_size=512, max_users=num_users).to(device)
+        model = FairBeamformingNet(input_size, hidden_size=512, max_users=num_users,num_rf_chains=num_rf_chains).to(device)
         try:
             model.load_state_dict(torch.load(model_name))
             print(f"The pretrained model was successfully loaded: {model_name}")
         except Exception as e:
             print(f"The model fails to load and will be retrained. error message: {str(e)}")
-            model, model_name = train_model(rho_set=rho)
+            model, model_name = train_model(target_angles_set=target_angles, rho_set=rho)
     else:
-        # 训练新模型
+        # Train a new model
         print("No matching pre-trained model found, start training a new model...")
-        model, model_name = train_model(rho_set=rho)
+        model, model_name = train_model(target_angles_set=target_angles, rho_set=rho)
 
     # test_input = torch.tensor([user_angles + target_angles], dtype=torch.float32)
 
     # test_Hc = generate_communication_channel(num_antennas, user_angles, random_seed=SEED)
     # test_Hs = generate_sensing_channel(num_antennas, target_angles, random_seed=SEED)
     test_Hc = generate_communication_channel(num_antennas, user_angles)
-    test_Hs = generate_sensing_channel(num_antennas, target_angles)
+    # test_Hs = generate_sensing_channel(num_antennas, target_angles)
 
     # Prepare the input data
     Hc_r = torch.FloatTensor(test_Hc.real).unsqueeze(0).to(device)
     Hc_i = torch.FloatTensor(test_Hc.imag).unsqueeze(0).to(device)
-    Hs_r = torch.FloatTensor(test_Hs.real).unsqueeze(0).to(device)
-    Hs_i = torch.FloatTensor(test_Hs.imag).unsqueeze(0).to(device)
+    target_angles_tensor = torch.FloatTensor(target_angles).to(device)
+    # Hs_r = torch.FloatTensor(test_Hs.real).unsqueeze(0).to(device)
+    # Hs_i = torch.FloatTensor(test_Hs.imag).unsqueeze(0).to(device)
     rho_tensor = torch.FloatTensor([rho]).to(device)
 
     # Get the weights of all methods
     with torch.no_grad():
         # dl_weights = model(test_input).numpy()[0]
-        dl_weights = model(Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor).numpy()[0]
-        de_weights = traditional_optimizer('DE', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
-        pso_weights = traditional_optimizer('PSO', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
-        gwo_weights = traditional_optimizer('GWO', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
-        woa_weights = traditional_optimizer('WOA', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
-        zf_weights = traditional_optimizer('ZF', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
-        mmse_weights = traditional_optimizer('MMSE', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
+        # dl_weights = model(Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor).numpy()[0]
+        dl_weights = model(Hc_r, Hc_i,  target_angles_tensor, rho_tensor).numpy()[0]
+        # de_weights = traditional_optimizer('DE', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
+        # pso_weights = traditional_optimizer('PSO', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
+        # gwo_weights = traditional_optimizer('GWO', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
+        # woa_weights = traditional_optimizer('WOA', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
+        # zf_weights = traditional_optimizer('ZF', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
+        # mmse_weights = traditional_optimizer('MMSE', Hc_r, Hc_i, Hs_r, Hs_i, rho_tensor)
+        de_weights = traditional_optimizer('DE', Hc_r, Hc_i, target_angles_tensor, rho_tensor)
+        pso_weights = traditional_optimizer('PSO', Hc_r, Hc_i, target_angles_tensor, rho_tensor)
+        gwo_weights = traditional_optimizer('GWO', Hc_r, Hc_i, target_angles_tensor, rho_tensor)
+        woa_weights = traditional_optimizer('WOA', Hc_r, Hc_i, target_angles_tensor, rho_tensor)
+        zf_weights = traditional_optimizer('ZF', Hc_r, Hc_i, target_angles_tensor, rho_tensor)
+        mmse_weights = traditional_optimizer('MMSE', Hc_r, Hc_i, target_angles_tensor, rho_tensor)
 
     plot_dnn_semicircular_beam_pattern(dl_weights)
 
@@ -367,9 +375,9 @@ def main():
     plt.legend()
     plt.show()
 
-    # 在性能分析部分添加能效可视化
-    plot_efficiency_comparison(methods, weights_dict, snr_dBs, colors, markers, user_steering_vectors)
-    plot_power_consumption(methods, weights_dict, colors)
+    # # 在性能分析部分添加能效可视化
+    # plot_efficiency_comparison(methods, weights_dict, snr_dBs, colors, markers, user_steering_vectors)
+    # plot_power_consumption(methods, weights_dict, colors)
 
     # 每个用户的速率
     # plt.figure(figsize=(15, 10))
@@ -390,7 +398,7 @@ def main():
     # plt.tight_layout()
     # plt.show()
 
-    # ========== 新增性能分析图 ==========
+    # ========== Added a profiling graph ==========
 
     # Calculate the bit error rate and CRLB
     ber_results = {method: [] for method in methods}
@@ -437,7 +445,7 @@ def main():
                      label=method,
                      linewidth=2)
 
-    # plt.title("误码率(BER)随SNR变化曲线", fontsize=12)
+    # plt.title("Bit error rate (BER) vs. SNR", fontsize=12)
     plt.xlabel("SNR (dB)", fontsize=20)
     plt.ylabel("BER", fontsize=20)
     plt.xlim(0, 10)
@@ -447,7 +455,7 @@ def main():
     plt.tight_layout()
     plt.show()
 
-    # # 绘制波束MSE曲线
+    # # Plot the beam MSE curve
     # plt.figure(figsize=(10, 6))
     # for idx, method in enumerate(methods):
     #     plt.plot(snr_dBs, mse_results[method],
@@ -456,9 +464,9 @@ def main():
     #              label=method,
     #              linewidth=2)
     #
-    # plt.title("波束成形MSE随SNR变化曲线", fontsize=12)
+    # plt.title("Beamforming MSE vs. SNR", fontsize=12)
     # plt.xlabel("SNR (dB)", fontsize=10)
-    # plt.ylabel("波束MSE", fontsize=10)
+    # plt.ylabel("Beam MSE", fontsize=10)
     # plt.grid(True, linestyle='--', alpha=0.5)
     # plt.legend(fontsize=9)
     # plt.yscale('log')
@@ -490,104 +498,104 @@ def main():
     plt.show()
 
 
-def plot_efficiency_comparison(methods, weights_dict, snr_dBs, colors, markers, user_steering_vectors):
-    """绘制能效比较图"""
-    plt.figure(figsize=(10, 6))
-
-    # 计算各方法在不同SNR下的能效
-    ee_results = {method: [] for method in methods}
-
-    for method in methods:
-        weights = weights_dict[method]
-        for snr_db in snr_dBs:
-            # 计算能效 (简化的能效计算)
-            transmit_power = np.sum(np.abs(weights) ** 2) / power_params['power_scaling']
-            total_power = transmit_power / power_params['PA_efficiency'] + power_params['circuit_power']
-
-            # 计算速率
-            rates = calculate_user_rates(weights, user_steering_vectors, snr_db)
-            sum_rate = np.sum(rates)
-
-            # 能效 = 总速率/总功耗 (bps/Hz/W)
-            ee = sum_rate / total_power
-            ee_results[method].append(ee)
-
-    # 绘制能效曲线
-    for idx, method in enumerate(methods):
-        plt.plot(snr_dBs, ee_results[method],
-                 color=colors[idx],
-                 marker=markers[idx],
-                 linewidth=2,
-                 label=method)
-
-    plt.xlabel("SNR (dB)", fontsize=20)
-    plt.ylabel("Energy Efficiency (bps/Hz/W)", fontsize=20)
-    plt.xlim(0, 10)
-    plt.xticks(fontsize=20)
-    plt.yticks(fontsize=20)
-    plt.grid(True, which="both", linestyle='--', alpha=0.5)
-    plt.legend(fontsize=12)
-    plt.tight_layout()
-    plt.show()
-
-
-def plot_power_consumption(methods, weights_dict, colors):
-    """绘制功耗比较图"""
-    plt.figure(figsize=(10, 6))
-
-    power_consumption = []
-    labels = []
-
-    for method in methods:
-        weights = weights_dict[method]
-        # 计算发射功率 (W)
-        transmit_power = np.sum(np.abs(weights) ** 2) / power_params['power_scaling']
-        # 计算总功耗
-        total_power = transmit_power / power_params['PA_efficiency'] + power_params['circuit_power']
-
-        power_consumption.append(total_power)
-        labels.append(method)
-
-    # 绘制柱状图
-    bars = plt.bar(labels, power_consumption, color=colors[:len(methods)])
-
-    # 添加数值标签
-    for bar in bars:
-        height = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width() / 2., height,
-                 f'{height:.2f} W', ha='center', va='bottom')
-
-    plt.ylabel("Total Power Consumption (W)", fontsize=20)
-    plt.xticks(fontsize=12, rotation=45)
-    plt.yticks(fontsize=20)
-    plt.grid(True, axis='y', linestyle='--', alpha=0.5)
-    plt.tight_layout()
-    plt.show()
+# def plot_efficiency_comparison(methods, weights_dict, snr_dBs, colors, markers, user_steering_vectors):
+#     """Draw a comparison of energy efficiency"""
+#     plt.figure(figsize=(10, 6))
+#
+#     # Calculate the energy efficiency of each method at different SNRs
+#     ee_results = {method: [] for method in methods}
+#
+#     for method in methods:
+#         weights = weights_dict[method]
+#         for snr_db in snr_dBs:
+#             # Calculating Energy Efficiency
+#             transmit_power = np.sum(np.abs(weights) ** 2) / power_params['power_scaling']
+#             total_power = transmit_power / power_params['PA_efficiency'] + power_params['circuit_power']
+#
+#             # Compute rate
+#             rates = calculate_user_rates(weights, user_steering_vectors, snr_db)
+#             sum_rate = np.sum(rates)
+#
+#             # Efficiency = Total Rate/Total Power Consumption (bps/Hz/W)
+#             ee = sum_rate / total_power
+#             ee_results[method].append(ee)
+#
+#     # Draw energy efficiency curves
+#     for idx, method in enumerate(methods):
+#         plt.plot(snr_dBs, ee_results[method],
+#                  color=colors[idx],
+#                  marker=markers[idx],
+#                  linewidth=2,
+#                  label=method)
+#
+#     plt.xlabel("SNR (dB)", fontsize=20)
+#     plt.ylabel("Energy Efficiency (bps/Hz/W)", fontsize=20)
+#     plt.xlim(0, 10)
+#     plt.xticks(fontsize=20)
+#     plt.yticks(fontsize=20)
+#     plt.grid(True, which="both", linestyle='--', alpha=0.5)
+#     plt.legend(fontsize=12)
+#     plt.tight_layout()
+#     plt.show()
+#
+#
+# def plot_power_consumption(methods, weights_dict, colors):
+#     """Draw a power consumption comparison graph"""
+#     plt.figure(figsize=(10, 6))
+#
+#     power_consumption = []
+#     labels = []
+#
+#     for method in methods:
+#         weights = weights_dict[method]
+#         # Calculate the transmit power (W)
+#         transmit_power = np.sum(np.abs(weights) ** 2) / power_params['power_scaling']
+#         # Calculate the total power consumption
+#         total_power = transmit_power / power_params['PA_efficiency'] + power_params['circuit_power']
+#
+#         power_consumption.append(total_power)
+#         labels.append(method)
+#
+#     # Draw a histogram
+#     bars = plt.bar(labels, power_consumption, color=colors[:len(methods)])
+#
+#     # Add numeric labels
+#     for bar in bars:
+#         height = bar.get_height()
+#         plt.text(bar.get_x() + bar.get_width() / 2., height,
+#                  f'{height:.2f} W', ha='center', va='bottom')
+#
+#     plt.ylabel("Total Power Consumption (W)", fontsize=20)
+#     plt.xticks(fontsize=12, rotation=45)
+#     plt.yticks(fontsize=20)
+#     plt.grid(True, axis='y', linestyle='--', alpha=0.5)
+#     plt.tight_layout()
+#     plt.show()
 
 
 if __name__ == "__main__":
     main()
 
-    # # 优先检查现有模型
+    # # Prioritize checking existing models
     # model_name = check_model_exists(user_angles, target_angles, num_antennas, rho)
     #
     # if model_name:
-    #     # 加载现有模型
+    #     # Load an existing model
     #     model = FairBeamformingNet(input_size=len(user_angles + target_angles))
     #     try:
     #         model.load_state_dict(torch.load(model_name))
-    #         print(f"成功加载预训练模型: {model_name}")
+    #         print(f"The pretrained model was successfully loaded: {model_name}")
     #     except Exception as e:
-    #         print(f"模型加载失败，将重新训练。错误信息: {str(e)}")
+    #         print(f"The model fails to load and will be retrained. error message: {str(e)}")
     #         model, model_name = train_model(rho = rho)
     # else:
-    #     # 训练新模型
-    #     print("未找到匹配的预训练模型，开始训练新模型...")
+    #     # Train a new model
+    #     print("If no matching pretrained model is found, start training a new model...")
     #     model, model_name = train_model(rho = rho)
     #
     # test_input = torch.tensor([user_angles + target_angles], dtype=torch.float32)
     #
-    # # 获取所有方法的权重
+    # # Gets the weights of all methods
     # with torch.no_grad():
     #     dl_weights = model(test_input).numpy()[0]
     # de_weights = traditional_optimizer('DE')
@@ -601,7 +609,7 @@ if __name__ == "__main__":
     #
     # # ================== run time ==================
     # methods = {
-    #     "Deep Learning": lambda: model(test_input),  # 假设model已定义
+    #     "Deep Learning": lambda: model(test_input),
     #     "Differential Evolution": lambda: traditional_optimizer('DE'),
     #     "PSO": lambda: traditional_optimizer('PSO'),
     #     # "Cuckoo Search": lambda: traditional_optimizer('CS'),
@@ -611,21 +619,21 @@ if __name__ == "__main__":
     #     "MMSE": lambda: traditional_optimizer('MMSE')
     # }
     #
-    # # 测试不同天线数量下的运行时间
-    # # antenna_configs = [8, 16, 32, 64]  # 测试不同天线规模
-    # antenna_configs = [16]  # 测试不同天线规模
+    # # Test the run time with different antenna counts
+    # # antenna_configs = [8, 16, 32, 64]  # Test different antenna sizes
+    # antenna_configs = [16]  # Test different antenna sizes
     # results = {name: [] for name in methods}
     #
-    # # ================== 运行测试 ==================
-    # print("开始运行时间测试...")
-    # for num_antennas in tqdm(antenna_configs, desc="天线配置"):
-    #     # 更新全局参数（实际代码需调整您的全局变量）
+    # # ================== Run the test ==================
+    # print("Start running a run-time test...")
+    # for num_antennas in tqdm(antenna_configs, desc="Antenna configuration"):
+    #     # Update global parameters (the actual code needs to adjust your global variables)
     #     globals()['num_antennas'] = num_antennas
     #
     #     for name, func in tqdm(methods.items(), desc="方法", leave=False):
-    #         # 深度学习的测试需要特殊处理
+    #         # Deep learning tests require special handling
     #         if name == "Deep Learning":
-    #             if num_antennas != 16:  # 假设模型是16天线训练的
+    #             if num_antennas != 16:  # Let's assume that the model is trained with 16 antennas
     #                 results[name].append(np.nan)
     #                 continue
     #
