@@ -197,7 +197,9 @@ def main():
 
     if model_name:
         # Load an existing model
-        model = FairBeamformingNet(input_size, hidden_size=512, max_users=num_users,num_rf_chains=num_rf_chains).to(device)
+        # model = FairBeamformingNet(input_size, hidden_size=512, max_users=num_users,num_rf_chains=num_rf_chains).to(device)
+        model = FairBeamformingNet(input_size, hidden_size=512, num_rf_chains=num_rf_chains).to(
+            device)
         try:
             model.load_state_dict(torch.load(model_name))
             print(f"The pretrained model was successfully loaded: {model_name}")
@@ -211,18 +213,20 @@ def main():
 
     # test_input = torch.tensor([user_angles + target_angles], dtype=torch.float32)
 
-    # test_Hc = generate_communication_channel(num_antennas, user_angles, random_seed=SEED)
+    test_Hc = generate_communication_channel(num_antennas, user_angles, random_seed=SEED)
     # test_Hs = generate_sensing_channel(num_antennas, target_angles, random_seed=SEED)
-    test_Hc = generate_communication_channel(num_antennas, user_angles)
+    # test_Hc = generate_communication_channel(num_antennas, user_angles)
     # test_Hs = generate_sensing_channel(num_antennas, target_angles)
 
     # Prepare the input data
     Hc_r = torch.FloatTensor(test_Hc.real).unsqueeze(0).to(device)
     Hc_i = torch.FloatTensor(test_Hc.imag).unsqueeze(0).to(device)
-    target_angles_tensor = torch.FloatTensor(target_angles).to(device)
+    target_angles_tensor = torch.FloatTensor(target_angles).unsqueeze(0).to(device)
+    # print(target_angles_tensor.shape)
     # Hs_r = torch.FloatTensor(test_Hs.real).unsqueeze(0).to(device)
     # Hs_i = torch.FloatTensor(test_Hs.imag).unsqueeze(0).to(device)
-    rho_tensor = torch.FloatTensor([rho]).to(device)
+    rho_tensor = torch.FloatTensor([rho]).unsqueeze(0).to(device)
+    # print(rho_tensor.shape)
 
     # Get the weights of all methods
     with torch.no_grad():
@@ -242,6 +246,7 @@ def main():
         zf_weights = traditional_optimizer('ZF', Hc_r, Hc_i, target_angles_tensor, rho_tensor)
         mmse_weights = traditional_optimizer('MMSE', Hc_r, Hc_i, target_angles_tensor, rho_tensor)
 
+    # ========== Plot DNN Semicircular Beam Pattern ==========
     plot_dnn_semicircular_beam_pattern(dl_weights)
 
     # plot_constellation_dnn(dl_weights, user_angles, snr_db=10)
