@@ -104,13 +104,15 @@ def train_model(target_angles_set,rho_set=None):
 
     # Model parameters
     # input_size = 2 * (num_users * num_antennas + num_targets * num_antennas) + 1
-    model = FairBeamformingNet(input_size, hidden_size=512, max_users=num_users,num_rf_chains=num_rf_chains).to(device)  # 减小隐藏层大小
+    # model = FairBeamformingNet(input_size, hidden_size=512, max_users=num_users,num_rf_chains=num_rf_chains).to(device)  # 减小隐藏层大小
+    model = FairBeamformingNet(input_size, hidden_size=512, num_rf_chains=num_rf_chains).to(
+        device)  # 减小隐藏层大小
     criterion = MultiTaskLoss(rho=rho, lambda_reg=0.1)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
     # Training loops
     best_loss = float('inf')
-    for epoch in range(100):
+    for epoch in range(20):
         model.train()
         train_loss = 0
         for Hc_r, Hc_i, target_angles, r in train_loader:

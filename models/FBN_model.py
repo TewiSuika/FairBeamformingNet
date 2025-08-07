@@ -8,23 +8,16 @@ import os
 from config import *
 
 
+
+
 class FairBeamformingNet(nn.Module):
-    def __init__(self, input_size, hidden_size=512, max_users=num_users, num_rf_chains=4):
+    def __init__(self, input_size, hidden_size=512, num_rf_chains=4):
         super().__init__()
-        self.max_users = max_users
         self.num_rf_chains = num_rf_chains
-        self.num_antennas = 16
-
-        # assert max_users <= num_rf_chains, "max_users cannot exceed num_rf_chains"
-
-        # Enter the feature dimension calculation:
-        # Hc_real + Hc_imag = 2 * (max_users * num_antennas)
-        # rho = 1
-        # target_angles = num_targets
-        # input = 2 * max_users * num_antennas + 1 + num_targets
+        self.num_antennas = num_antennas
         self.input_size = input_size
 
-        # Shared network
+        # Shared feature extraction network
         self.shared_net = nn.Sequential(
             nn.Linear(self.input_size, hidden_size),
             nn.ReLU(),
@@ -32,68 +25,41 @@ class FairBeamformingNet(nn.Module):
             nn.ReLU()
         )
 
-        # Digital branches
-        self.digital_branches = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(hidden_size, hidden_size),
-                nn.ReLU(),
-                nn.Linear(hidden_size, 2)
-            ) for _ in range(max_users)
-        ])
+        # Digital Beamforming Processor
+        self.digital_processor = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, num_rf_chains * 2)  # [num_rf_chains * 2]
+        )
 
-        # Analog beamformer
+        # Analog beamforming network
         self.analog_beamformer = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, num_antennas*num_rf_chains * 2)
+            nn.Linear(hidden_size, num_antennas * num_rf_chains * 2)
         )
 
         self.norm = nn.LayerNorm(num_antennas * 2)
 
-    def forward(self, Hc_real, Hc_imag, target_angles, rho,  num_users=None):
-        if num_users is None:
-            num_users = self.max_users
-        else:
-            # Make sure num_users is a Python scalar and not a tensor
-            if torch.is_tensor(num_users):
-                num_users = num_users.item()
-
-        # assert num_users <= self.max_users, f"num_users ({num_users}) > max_users ({self.max_users})"
-
-        # Handle the communication channel
+    def forward(self, Hc_real, Hc_imag, target_angles, rho):
+        # Feature extraction
         Hc = torch.cat([Hc_real.flatten(1), Hc_imag.flatten(1)], dim=1)
-
-        # Working with Target Angles (Use All Angle Values)
-        # target_angles : [batch_size, num_targets]
-
-        # Stitch together all input features
-        x = torch.cat([Hc, target_angles.view(-1, 1), rho.view(-1, 1) ], dim=1)
+        x = torch.cat([Hc, target_angles, rho.view(-1, 1)], dim=1)
         x = self.shared_net(x)
 
-        # Generate digital beamforming
-        digital_outputs = [self.digital_branches[i](x).view(-1, 1, 2)
-                           for i in range(num_users)]
-        digital_combined = torch.cat(digital_outputs, dim=1)
+        # Digital beamforming
+        digital_weights = self.digital_processor(x).view(-1, self.num_rf_chains, 2)
 
-        if num_users < self.num_rf_chains:
-            padding = torch.zeros(x.size(0),
-                                  self.num_rf_chains - num_users,
-                                  2, device=x.device)
-            digital_combined = torch.cat([digital_combined, padding], dim=1)
-
-        # Generate analog beamforming
-        analog_output = self.analog_beamformer(x).view(-1, self.num_rf_chains, self.num_antennas, 2)
+        # Analog beamforming
+        analog_weights = self.analog_beamformer(x).view(-1, self.num_rf_chains, self.num_antennas, 2)
 
         # Hybrid beamforming
-        hybrid_output = torch.einsum('brf,brnf->bnf', digital_combined, analog_output)
-        hybrid_output = hybrid_output.flatten(1)  # [B, 32]
-
-        return self.norm(hybrid_output)
-
+        hybrid_output = torch.einsum('brf,brnf->bnf', digital_weights, analog_weights)
+        return self.norm(hybrid_output.flatten(1))
 
 class MultiTaskLoss(nn.Module):
     def __init__(self, rho=0.7, lambda_reg=0.1, min_power_weight=5.0,
-                 d=0.5, wavelength=1.0, num_antennas=16, P_max=1.0):
+                 d=0.5, wavelength=1.0, num_antennas=num_antennas, P_max=1.0):
         super().__init__()
         # Configure parameters
         self.rho = rho
@@ -127,6 +93,7 @@ class MultiTaskLoss(nn.Module):
         norm_factor = torch.sqrt(torch.tensor(self.num_antennas, dtype=torch.float32, device=device))
         return steering_vec / norm_factor
 
+    # def forward(self, W, Hc, Hs):
     def forward(self, W, Hc, target_angles):
         # print(W.shape)
         """
@@ -138,6 +105,21 @@ class MultiTaskLoss(nn.Module):
             target_angles: Perceive the target angle [batch_size, num_targets]
         """
         batch_size, num_users, num_antennas = Hc.shape
+
+        #     def estimate_angles(self, H):
+        #         """Angle Estimation Method"""
+        #         device = H.device
+        #         batch_size, num_targets, _ = H.shape
+        #
+        #         phases = torch.angle(H)  # [B, T, A]
+        #         phases_unwrapped = torch.zeros_like(phases)
+        #
+        #         for b in range(batch_size):
+        #             for t in range(num_targets):
+        #                 phase_diff = torch.diff(phases[b, t], dim=0)
+        #                 phase_diff = (phase_diff + np.pi) % (2 * np.pi) - np.pi
+        #                 phases_unwrapped[b, t, 1:] = torch.cumsum(phase_diff, dim=0)
+        #
 
         # ===== Beamforming vector processing =====
         real_part = W[:, :num_antennas]
@@ -152,7 +134,9 @@ class MultiTaskLoss(nn.Module):
         # print(Hc.squeeze(0).T).shape)
         # print(w_cplx.shape)
         # print((Hc[0].T).shape)
-        user_gains = torch.abs(w_cplx @ Hc[0].T)
+        # user_gains = torch.abs(w_cplx @ Hc[0].T)
+        # 在MultiTaskLoss中修改用户增益计算方式：
+        user_gains = torch.abs(w_cplx @ Hc.transpose(1, 2))  # [batch_size, num_users]
         min_user_gain = torch.min(user_gains)
         sum_user_gain = torch.sum(user_gains)
         # user_gains = torch.zeros(batch_size, num_users, device=W.device)
@@ -196,8 +180,8 @@ class MultiTaskLoss(nn.Module):
         avg_target_gain = torch.mean(target_gains, dim=1)  # [B]
 
         # ===== Multi-tasking loss combinations =====
-        comm_loss = -self.rho * 0.02 * (min_user_gain + 1.5 * sum_user_gain - self.adjacent_weight * interference)
-        sens_loss = -(1 - self.rho) * 3 * avg_target_gain
+        comm_loss = -self.rho * 0.025 * (min_user_gain + 1.5 * sum_user_gain - self.adjacent_weight * interference)
+        sens_loss = -(1 - self.rho) * 250 * avg_target_gain
 
         return torch.mean(comm_loss + sens_loss)
 
